@@ -48,6 +48,21 @@ namespace WirePod
 			}
 		}
 
+		/// <summary>The "Extra features" switch (set by the Java ExtrasActivity, same preferences).</summary>
+		public static bool ExtrasEnabled
+		{
+			get
+			{
+				return WirePodConfig.Prefs.GetString("extras_enabled", "0") == "1";
+			}
+		}
+
+		/// <summary>One extra feature's own switch (prefs "feat_drive", "feat_ssh", "feat_quick"); on unless switched off.</summary>
+		public static bool FeatureEnabled(string name)
+		{
+			return WirePodConfig.Prefs.GetString("feat_" + name, "1") == "1";
+		}
+
 		public static void SaveServer(string server, string resolvedIp)
 		{
 			WirePodConfig.Prefs.Edit().PutString(WirePodConfig.kServerKey, server).PutString(WirePodConfig.kServerIpKey, resolvedIp).Apply();
@@ -239,6 +254,17 @@ namespace WirePod
 		private const string kPrefsName = "wirepod";
 
 		private const string kServerKey = "server";
+
+		/// <summary>The session token from sign-in; the extra features send it to the server (Authorization: Bearer).</summary>
+		public const string kSessionTokenKey = "session_token";
+
+		public static string SessionToken
+		{
+			get
+			{
+				return WirePodConfig.Prefs.GetString(WirePodConfig.kSessionTokenKey, string.Empty);
+			}
+		}
 
 		private const string kServerIpKey = "server_ip";
 	}

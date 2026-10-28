@@ -14,3 +14,7 @@ ssh_root_key
 *.pem
 tools/
 *.idsig
+
+# Community server: accounts and local settings
+community-server/data/
+community-server/config.json

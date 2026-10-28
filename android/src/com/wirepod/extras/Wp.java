@@ -21,6 +21,7 @@ final class Wp {
     static final String PREFS = "wirepod";
     static final String KEY_SERVER = "server";
     static final String KEY_EXTRAS = "extras_enabled";
+    static final String KEY_TOKEN = "session_token";
 
     private Wp() {
     }
@@ -31,7 +32,7 @@ final class Wp {
 
     static String server(Context c) {
         String s = prefs(c).getString(KEY_SERVER, null);
-        return (s == null || s.length() == 0) ? "escapepod.local:8080" : s;
+        return (s == null || s.length() == 0) ? "vicapi.pvic.xyz:443" : s;
     }
 
     static boolean extrasEnabled(Context c) {
@@ -88,7 +89,7 @@ final class Wp {
     }
 
     private static String send(Context c, String method, String path, String json) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL("http://" + server(c) + path).openConnection();
+        HttpURLConnection conn = open(c, path);
         conn.setConnectTimeout(8000);
         conn.setReadTimeout(20000);
         conn.setRequestMethod(method);
@@ -107,6 +108,13 @@ final class Wp {
             throw new Exception("wire-pod answered " + code + ": " + text.trim());
         }
         return text;
+    }
+
+    /** wire-pod, through the community server (https), with the sign-in session token it checks. */
+    static HttpURLConnection open(Context c, String path) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL("https://" + server(c) + path).openConnection();
+        conn.setRequestProperty("Authorization", "Bearer " + prefs(c).getString(KEY_TOKEN, ""));
+        return conn;
     }
 
     static String read(InputStream in) throws Exception {

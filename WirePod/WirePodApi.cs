@@ -46,6 +46,8 @@ namespace WirePod
 
 		private static string Send(HttpRequestMessage request)
 		{
+			// wire-pod is reached through the community server, which only lets signed-in users through.
+			request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + WirePodConfig.SessionToken);
 			string text;
 			// Pass the handler explicitly: the default one is chosen by reflection, which the linker can't see.
 			using (HttpClient httpClient = new HttpClient(new AndroidClientHandler()))

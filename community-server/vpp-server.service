@@ -1,0 +1,16 @@
+[Unit]
+Description=Vector++ community server (accounts and session certs; wire-pod does the rest)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=hayes
+WorkingDirectory=/home/hayes/vpp-server
+Environment=VPP_CONFIG=/home/hayes/vpp-server/config.json
+ExecStart=/usr/bin/python3 /home/hayes/vpp-server/vpp_server.py
+Restart=on-failure
+# Binding to a port below 1024 (e.g. 443) needs this; 8443 doesn't.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

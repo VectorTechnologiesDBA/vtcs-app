@@ -1,0 +1,10 @@
+{
+  "host": "0.0.0.0",
+  "port": 8443,
+  "cert_file": "/etc/letsencrypt/live/server.vectortech.dev/fullchain.pem",
+  "key_file": "/etc/letsencrypt/live/server.vectortech.dev/privkey.pem",
+  "wirepod_url": "http://127.0.0.1:8080",
+  "data_dir": "/home/hayes/vpp-server/data",
+  "session_days": 3650,
+  "allow_signup": true
+}

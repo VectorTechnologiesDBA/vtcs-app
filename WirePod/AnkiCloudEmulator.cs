@@ -142,6 +142,8 @@ namespace WirePod
 				}
 				string userId = (string)session["user_id"];
 				AnkiCloudEmulator.SaveUser(email, dob, userId);
+				// The extra features reach wire-pod through the server, which only lets signed-in users through.
+				WirePodConfig.Prefs.Edit().PutString(WirePodConfig.kSessionTokenKey, token).Apply();
 				DAS.Event("WirePod.AnkiCloudEmulator.SignInToServer", "signed in as " + email.Trim() + " (user " + userId + ")");
 				AnkiCloudEmulator.Respond(method, uri, HttpStatusCode.OK, AnkiCloudEmulator.SessionJson(token, userId, (string)session["time_created"], (string)session["time_expires"]), callback);
 			}

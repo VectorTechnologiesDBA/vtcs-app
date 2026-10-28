@@ -196,7 +196,7 @@ public class DriveActivity extends Activity {
             HttpURLConnection conn = null;
             try {
                 String s = serial();
-                conn = (HttpURLConnection) new URL("http://" + Wp.server(this) + "/cam-stream?serial=" + Wp.enc(s)).openConnection();
+                conn = Wp.open(this, "/cam-stream?serial=" + Wp.enc(s));
                 conn.setConnectTimeout(8000);
                 conn.setReadTimeout(10000);
                 InputStream in = conn.getInputStream();
