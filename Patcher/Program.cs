@@ -157,6 +157,17 @@ namespace Patcher
 			}
 			Program.Expect(num == 1, string.Format("expected 1 session-certs URL, patched {0}", num));
 
+			// 6. RobotCommunicationService.Initialize: call WirePod.Startup.Attach, which asks for the Android 12+
+			//    Bluetooth permissions (the app never asks for them itself).
+			//    The reference is built by hand: its parameter type is chewie's own RobotCommunicationService, and the
+			//    importer would otherwise write that as a reference into WirePod, which the runtime can't load.
+			TypeDef robotCommunicationService = Program.FindType(chewie, "chewie.Services.RobotCommunicationService");
+			Program.FindMethod(Program.FindType(wirePod, "WirePod.Startup"), "Attach");
+			MemberRef attach = new MemberRefUser(chewie, "Attach", MethodSig.CreateStatic(chewie.CorLibTypes.Void, new ClassSig(robotCommunicationService)), importer.Import(Program.FindType(wirePod, "WirePod.Startup")));
+			MethodDef initialize = Program.FindMethod(robotCommunicationService, "Initialize");
+			Program.CallWithThisBeforeReturn(initialize, attach);
+			Console.WriteLine("Patched " + initialize.FullName);
+
 			// 7. Turn off analytics (DAS). Its uploads go to Anki's suspended AWS account and fail; failed files are
 			//    retried forever and every failure is logged into a new file to upload. The resulting flood of threads
 			//    makes the app's old Mono runtime deadlock against Android's thread list lock (seen on Android 15).
@@ -169,9 +180,17 @@ namespace Patcher
 				json["LogLevels"] = new JsonArray();
 			});
 
-			// 8. Enable matrix eye color
+			// 8. Settings: an "Extra features" row above About; WirePod.Extras opens the Java screens (classes3.dex).
 			Program.EditJsonResource(chewieResources, "ChewieResources.Settings.MainSettingsData.json", delegate(JsonNode node)
 			{
+				JsonArray rows = node["MainSettingsTableObjs"].AsArray();
+				int about = rows.ToList().FindIndex((JsonNode r) => (string)r["NavigationKey"] == "about");
+				Program.Expect(about > 0, "no About row in MainSettingsData.json");
+				rows.Insert(about, new JsonObject
+				{
+					["CellType"] = 1, ["Title"] = "Extra features", ["SubTitle"] = "", ["NavigationKey"] = "wirepod_extras",
+					["IconImageKey"] = "settings_icon_preferences_mini", ["Height"] = 0.1
+				});
 				// Eanable hidden matrix green
 				JsonNode matrix = node["EyeColorCollectionObjs"].AsArray().ToList().Single((JsonNode c) => (int)c["Id"] == 6);
 				matrix["Name"] = "EyeColor.colorName.6";
@@ -180,7 +199,118 @@ namespace Patcher
 				matrix["EyeColor"]["G"] = 1.0;
 				matrix["EyeColor"]["B"] = 0.25;
 				matrix["EyeColor"]["A"] = 1.0;
+				// Custom eye color, backported from app 1.8 (EyeColorActivity), right below the preset eye colors (the header
+				// row). MainSettingsViewModel.NetworkIndex is shifted to match (patch 14).
+				rows.Insert(1, new JsonObject
+				{
+					["CellType"] = 1, ["Title"] = "Custom eye color", ["SubTitle"] = "", ["NavigationKey"] = "wirepod_eyecolor",
+					["IconImageKey"] = "settings_icon_preferences_mini", ["Height"] = 0.1
+				});
 			});
+			TypeDef extras = Program.FindType(wirePod, "WirePod.Extras");
+			MethodDef onRowSelected = Program.FindMethod(Program.FindType(chewie, "chewie.Settings.MainSettingsViewModel"), "OnRowSelected");
+			{
+				// Task t = Extras.OpenSetting(navKey); if (t != null) return t;
+				IList<Instruction> instructions3 = onRowSelected.Body.Instructions;
+				Instruction first = instructions3[0];
+				instructions3.Insert(0, OpCodes.Ldarg_1.ToInstruction());
+				instructions3.Insert(1, OpCodes.Call.ToInstruction(importer.Import(Program.FindMethod(extras, "OpenSetting"))));
+				instructions3.Insert(2, OpCodes.Dup.ToInstruction());
+				Instruction pop = OpCodes.Pop.ToInstruction();
+				instructions3.Insert(3, OpCodes.Brfalse_S.ToInstruction(pop));
+				instructions3.Insert(4, OpCodes.Ret.ToInstruction());
+				instructions3.Insert(5, pop);
+				onRowSelected.Body.SimplifyBranches();
+				onRowSelected.Body.OptimizeBranches();
+				Console.WriteLine("Patched " + onRowSelected.FullName);
+			}
+
+			// 9. Home: Drive and SSH tiles; HandleCellSelected asks Extras.OpenTile(CategoryList[index].Id) first.
+			Program.EditJsonResource(chewieResources, "ChewieResources.ViewData.CategoryCardData.json", delegate(JsonNode node)
+			{
+				JsonArray tiles = node.AsArray();
+				tiles.Add(new JsonObject { ["Id"] = "wirepod_drive", ["CategoryTitle"] = "Drive", ["CategoryIcon"] = "nav_icon_drive_sml", ["FeaturedIndex"] = 0, ["FeatureFlagId"] = "wirepod_drive", ["InfoCardIds"] = new JsonArray() });
+				tiles.Add(new JsonObject { ["Id"] = "wirepod_ssh", ["CategoryTitle"] = "SSH", ["CategoryIcon"] = "nav_icon_ssh_sml", ["FeaturedIndex"] = 0, ["FeatureFlagId"] = "wirepod_ssh", ["InfoCardIds"] = new JsonArray() });
+				tiles.Add(new JsonObject { ["Id"] = "wirepod_quick", ["CategoryTitle"] = "Quick Actions", ["CategoryIcon"] = "nav_icon_quickactions_sml", ["FeaturedIndex"] = 0, ["FeatureFlagId"] = "wirepod_quick", ["InfoCardIds"] = new JsonArray() });
+			});
+			MethodDef cellSelected = Program.FindMethod(Program.FindType(chewie, "chewie.Features.Home.HomeFlowModel"), "HandleCellSelected");
+			{
+				// The method starts with this.CategoryList[index].Id: copy those four instructions, then call the hook.
+				IList<Instruction> instructions4 = cellSelected.Body.Instructions;
+				Program.Expect(instructions4[0].OpCode == OpCodes.Ldarg_0 && instructions4[2].OpCode == OpCodes.Ldarg_1
+					&& ((IMethod)instructions4[3].Operand).Name == "get_Item" && ((IMethod)instructions4[4].Operand).Name == "get_Id",
+					cellSelected.FullName + " doesn't start with CategoryList[index].Id");
+				Instruction first = instructions4[0];
+				List<Instruction> load = instructions4.Take(5).Select((Instruction x) => new Instruction(x.OpCode, x.Operand)).ToList();
+				for (int j = 0; j < load.Count; j++)
+				{
+					instructions4.Insert(j, load[j]);
+				}
+				instructions4.Insert(5, OpCodes.Call.ToInstruction(importer.Import(Program.FindMethod(extras, "OpenTile"))));
+				instructions4.Insert(6, OpCodes.Brfalse.ToInstruction(first));
+				instructions4.Insert(7, OpCodes.Ret.ToInstruction());
+				Console.WriteLine("Patched " + cellSelected.FullName);
+			}
+
+			// 10. ResourceHelper.GetResourceIdForIdentifier: fall back to Android's lookup for the new icons.
+			MethodDef getResourceId = Program.FindMethod(Program.FindType(chewie, "chewie.Droid.Helpers.ResourceHelper"), "GetResourceIdForIdentifier");
+			{
+				IMethod resolve = importer.Import(Program.FindMethod(extras, "ResolveResource"));
+				IList<Instruction> instructions5 = getResourceId.Body.Instructions;
+				foreach (Instruction ret in instructions5.Where((Instruction x) => x.OpCode == OpCodes.Ret).ToList())
+				{
+					// ret -> ldarg.0; ldarg.1; call ResolveResource(id, identifier, type); ret (branches to ret still pass through)
+					ret.OpCode = OpCodes.Ldarg_0;
+					ret.Operand = null;
+					int at = instructions5.IndexOf(ret);
+					instructions5.Insert(at + 1, OpCodes.Ldarg_1.ToInstruction());
+					instructions5.Insert(at + 2, OpCodes.Call.ToInstruction(resolve));
+					instructions5.Insert(at + 3, OpCodes.Ret.ToInstruction());
+				}
+				Console.WriteLine("Patched " + getResourceId.FullName);
+			}
+
+			// 11. The Drive/SSH/Quick Actions tiles carry feature flags (their ids): ChewieFeatureFlagService.IsFeatureEnabled answers
+			//     them from the Extra features switches, so Home hides them (and keeps its original layout) when it's off.
+			MethodDef isFeatureEnabled = Program.FindMethod(Program.FindType(chewie, "chewie.Services.ChewieFeatureFlagService"), "IsFeatureEnabled");
+			{
+				IList<Instruction> instructions6 = isFeatureEnabled.Body.Instructions;
+				Instruction first = instructions6[0];
+				instructions6.Insert(0, OpCodes.Ldarg_1.ToInstruction());
+				instructions6.Insert(1, OpCodes.Call.ToInstruction(importer.Import(Program.FindMethod(extras, "IsExtrasFlag"))));
+				instructions6.Insert(2, OpCodes.Brfalse.ToInstruction(first));
+				instructions6.Insert(3, OpCodes.Ldarg_1.ToInstruction());
+				instructions6.Insert(4, OpCodes.Call.ToInstruction(importer.Import(Program.FindMethod(extras, "FeatureOn"))));
+				instructions6.Insert(5, OpCodes.Ret.ToInstruction());
+				Console.WriteLine("Patched " + isFeatureEnabled.FullName);
+			}
+
+			// 12. The Explore grid doesn't scroll and sizes each tile as rows * 0.055 of its cell, which is 1.45 screens:
+			//     that fits four rows. With the extra tiles (five rows), Extras makes the cell taller and the factor smaller.
+			MethodDef getView = Program.FindMethod(Program.FindType(chewie, "chewie.Droid.Features.Home.HomeListViewAdapter"), "GetView");
+			{
+				IList<Instruction> instructions7 = getView.Body.Instructions;
+				List<Instruction> heights = instructions7.Where((Instruction x) => x.OpCode == OpCodes.Ldfld && ((IField)x.Operand).Name == "Height").ToList();
+				Program.Expect(heights.Count == 1, "expected one HomeCellData.Height read in " + getView.FullName);
+				instructions7.Insert(instructions7.IndexOf(heights[0]) + 1, OpCodes.Call.ToInstruction(importer.Import(Program.FindMethod(extras, "HomeCellHeight"))));
+				Console.WriteLine("Patched " + getView.FullName);
+			}
+			MethodDef createHolder = Program.FindMethod(Program.FindType(chewie, "chewie.Droid.Features.Home.ExploreRecyclerAdapter"), "OnCreateViewHolder");
+			Instruction factor = createHolder.Body.Instructions.Single((Instruction x) => x.OpCode == OpCodes.Ldc_R4 && Math.Abs((float)x.Operand - 0.055f) < 1e-6f);
+			factor.OpCode = OpCodes.Call;
+			factor.Operand = importer.Import(Program.FindMethod(extras, "ExploreTileFactor"));
+			Console.WriteLine("Patched " + createHolder.FullName);
+
+			// 13. RobotSettingsService.SetEyeColor: picking a preset also switches off the custom eye color.
+			MethodDef setEyeColor = Program.FindMethod(Program.FindType(chewie, "chewie.Features.Settings.RobotSettingsService"), "SetEyeColor");
+			setEyeColor.Body.Instructions.Insert(0, OpCodes.Ldarg_1.ToInstruction());
+			setEyeColor.Body.Instructions.Insert(1, OpCodes.Call.ToInstruction(importer.Import(Program.FindMethod(extras, "PresetEyeColorPicked"))));
+			Console.WriteLine("Patched " + setEyeColor.FullName);
+
+			// 14. MainSettingsViewModel.NetworkIndex is a fixed row position (1 or 2); the eye color row above it adds one.
+			MethodDef networkIndex = Program.FindMethod(Program.FindType(chewie, "chewie.Settings.MainSettingsViewModel"), "get_NetworkIndex");
+			Program.HookReturnValue(networkIndex, importer.Import(Program.FindMethod(extras, "ShiftSettingsIndex")));
+			Console.WriteLine("Patched " + networkIndex.FullName);
 
 			// 14b. Fix for when robot's eye color isn't in the defined eye color list
 			{
