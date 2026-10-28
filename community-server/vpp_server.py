@@ -16,6 +16,10 @@ custom eye colors, SSH console), it also passes these through to wire-pod, for s
     /api/*          wire-pod's settings API (weather and knowledge graph providers)
     /cam-stream     Vector's camera (MJPEG, streamed)
 
+It also hosts your CFW's OS updates (no sign-in needed: robots download them themselves):
+    /vic/full/latest.ota, /vic/full/lkg.ota, /vic/full/<version>.ota, /vic/diff/<version>.ota
+served from ota_dir. Optionally also over plain HTTP (ota_http_port) for robots on old recovery firmware.
+
 Everything Vector himself needs (voice, jdocs, token server, weather, knowledge graph, SDK) is done by wire-pod.
 Session certificates come from wire-pod too: it captures them when Vector authenticates, and serves them at
 http://<wire-pod>:8080/session-certs/<esn>.
@@ -51,6 +55,8 @@ DEFAULTS = {
     "data_dir": os.path.join(HERE, "data"),
     "session_days": 3650,
     "allow_signup": True,
+    "ota_dir": os.path.join(HERE, "ota"),
+    "ota_http_port": 0,
 }
 
 log = logging.getLogger("vpp")
@@ -163,8 +169,29 @@ def error(code, message):
 PASSWORD_OK = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,32}$")
 ESN = re.compile(r"^[0-9a-fA-F]{8}$")
 PROXIED = ("/api-sdk/", "/api/", "/cam-stream")
+OTA_PATH = re.compile(r"^(full|diff)/[A-Za-z0-9._-]+\.ota$")
 HOP_BY_HOP = {"connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade", "proxy-authorization",
               "proxy-authenticate", "authorization", "host", "content-length"}
+
+
+class OtaOnlyHandler(BaseHTTPRequestHandler):
+    """Plain-HTTP listener for OS updates only (ota_http_port), for robots that can't do modern HTTPS."""
+    server_version = "VectorPlusPlusCommunity/1.0"
+
+    def log_message(self, fmt, *args):
+        log.info("%s (http) %s", self.client_address[0], fmt % args)
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path.startswith("/vic/"):
+            return Handler.ota(self, path)
+        Handler.send_json(self, 404, error("not_found", "Only /vic/ updates are served over plain HTTP."))
+
+    def do_HEAD(self):
+        path = self.path.split("?", 1)[0]
+        if path.startswith("/vic/"):
+            return Handler.ota(self, path, head=True)
+        Handler.send_json(self, 404, error("not_found", "Only /vic/ updates are served over plain HTTP."))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -190,8 +217,16 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             return None
 
+    def do_HEAD(self):
+        path = self.path.split("?", 1)[0]
+        if path.startswith("/vic/"):
+            return self.ota(path, head=True)
+        return self.send_json(404, error("not_found", "Unknown path."))
+
     def do_GET(self):
         path = self.path.split("?", 1)[0].rstrip("/")
+        if path.startswith("/vic/"):
+            return self.ota(path)
         if path.startswith(PROXIED):
             return self.proxy("GET")
         if path in ("/v1", ""):
@@ -276,6 +311,53 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError):
                 pass  # the app went away (e.g. left the Drive screen)
 
+    def ota(self, path, head=False):
+        """An OS update file from ota_dir (e.g. /vic/full/latest.ota -> ota_dir/full/latest.ota), with Range support
+        so interrupted downloads can resume."""
+        rel = path[len("/vic/"):]
+        if not OTA_PATH.match(rel):
+            return self.send_json(404, error("not_found", "No such update."))
+        root = os.path.realpath(CFG["ota_dir"])
+        full = os.path.realpath(os.path.join(root, *rel.split("/")))
+        if not full.startswith(root + os.sep) or not os.path.isfile(full):
+            return self.send_json(404, error("not_found", "No such update: " + rel))
+        size = os.path.getsize(full)
+        start, end = 0, size - 1
+        m = re.match(r"bytes=(\d*)-(\d*)$", self.headers.get("Range") or "")
+        if m and (m.group(1) or m.group(2)):
+            if m.group(1):
+                start = int(m.group(1))
+                end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+            else:
+                start = max(size - int(m.group(2)), 0)
+            if start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */%d" % size)
+                self.end_headers()
+                return
+            self.send_response(206)
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+        else:
+            self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.end_headers()
+        if head:
+            return
+        try:
+            with open(full, "rb") as f:
+                f.seek(start)
+                left = end - start + 1
+                while left > 0:
+                    chunk = f.read(min(1 << 20, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError):
+            pass
+
     def session_cert(self, name):
         # "<robot-name>_<esn>", or just "<esn>" when the app doesn't know the name.
         esn = name.rsplit("_", 1)[-1].lower()
@@ -307,6 +389,11 @@ def main():
     except (OSError, ssl.SSLError) as e:
         sys.exit("Can't load the certificate (%s / %s): %s" % (CFG["cert_file"], CFG["key_file"], e))
     server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    os.makedirs(os.path.join(CFG["ota_dir"], "full"), exist_ok=True)
+    if int(CFG.get("ota_http_port") or 0):
+        plain = ThreadingHTTPServer((CFG["host"], int(CFG["ota_http_port"])), OtaOnlyHandler)
+        threading.Thread(target=plain.serve_forever, daemon=True).start()
+        log.info("OS updates also over plain HTTP on port %s", CFG["ota_http_port"])
     log.info("Vector++ community server on https://%s:%s (wire-pod: %s)", CFG["host"], CFG["port"], CFG["wirepod_url"])
     try:
         server.serve_forever()

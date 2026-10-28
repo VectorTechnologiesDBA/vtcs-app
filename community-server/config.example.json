@@ -6,5 +6,7 @@
   "wirepod_url": "http://127.0.0.1:8080",
   "data_dir": "/home/hayes/vpp-server/data",
   "session_days": 3650,
-  "allow_signup": true
+  "allow_signup": true,
+  "ota_dir": "/home/hayes/vpp-server/ota",
+  "ota_http_port": 8088
 }
