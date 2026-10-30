@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Vector++ community server: the account side of a self-hosted "community cloud" for the Vector++ community-servers
+VTCS (Vector Tech Community Server): the account side of a self-hosted "community cloud" for the Vector++ community-servers
 app (github.com/Victor-Rebuild/vector-plus-plus-community-servers).
 
 The app talks to this server over HTTPS:
@@ -8,6 +8,12 @@ The app talks to this server over HTTPS:
     POST /v1/create_user                   {"username", "password", "dob"}          -> create an account
     POST /v1/sessions                      {"username", "password"}                 -> {"session": {...}, "user": {...}}
     GET  /v1/session_cert/<name>_<esn>     the robot's session certificate (PEM)
+
+The account page (account.html on the website, portal_url; the server's own / redirects there) uses those plus,
+signed in, from the site's origins (site_origins, allowed by CORS):
+    GET  /v1/me                            the account and its robots
+    POST /v1/robots/release                {"esn"}   take a robot off the account (e.g. after a factory reset)
+    POST /v1/logout                        end this session
 
 For the app's extra features (Weather and Knowledge settings, Talk, Drive with its live camera, Quick actions,
 custom eye colors, SSH console), it also passes these through to wire-pod, for signed-in users only
@@ -40,6 +46,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -57,6 +64,9 @@ DEFAULTS = {
     "allow_signup": True,
     "ota_dir": os.path.join(HERE, "ota"),
     "ota_http_port": 0,
+    "perbot_dir": "/etc/wire-pod/per-bot",
+    "portal_url": "https://vectortech.dev/account.html",
+    "site_origins": ["https://vectortech.dev", "https://www.vectortech.dev"],
 }
 
 log = logging.getLogger("vpp")
@@ -87,6 +97,8 @@ class Store:
         self.lock = threading.Lock()
         self.users = self._read("users.json")        # email (lower) -> user record
         self.sessions = self._read("sessions.json")  # token -> {user_id, created, expires}
+        self.robots = self._read("robots.json")      # esn -> {user_id, claimed}
+        self.settings = self._read("settings.json")  # user_id -> {"weather": {...}, "knowledge": {...}}
 
     def _read(self, name):
         path = os.path.join(self.dir, name)
@@ -141,12 +153,84 @@ class Store:
             self._write("sessions.json", self.sessions)
         return token, self.sessions[token]
 
-    def valid_token(self, token):
+    def user_id_for(self, token):
+        """The signed-in user's id for a session token, or None if the token is unknown or expired."""
         s = self.sessions.get(token or "")
-        return bool(s) and s["expires"] > now_iso()
+        return s["user_id"] if s and s["expires"] > now_iso() else None
+
+    # Robots belong to the first account that sets them up (claims them, see Handler.session_cert), and only
+    # that account can drive them, watch their camera or change their settings. data/robots.json: esn -> record.
+
+    def owner_of(self, esn):
+        r = self.robots.get(esn)
+        return r["user_id"] if r else None
+
+    def claim(self, esn, user_id):
+        """Give an unclaimed robot to user_id. True if user_id owns it afterwards."""
+        with self.lock:
+            r = self.robots.get(esn)
+            if r:
+                return r["user_id"] == user_id
+            self.robots[esn] = {"user_id": user_id, "claimed": now_iso()}
+            self._write("robots.json", self.robots)
+        log.info("robot %s claimed by user %s", esn, user_id)
+        write_perbot(esn)
+        return True
+
+    def release(self, esn):
+        with self.lock:
+            if self.robots.pop(esn, None) is None:
+                return False
+            self._write("robots.json", self.robots)
+        write_perbot(esn)
+        return True
+
+    def end_session(self, token):
+        with self.lock:
+            if self.sessions.pop(token, None) is not None:
+                self._write("sessions.json", self.sessions)
+
+    def robots_of(self, user_id):
+        return sorted(esn for esn, r in self.robots.items() if r["user_id"] == user_id)
+
+    # Each account's own weather and knowledge graph settings. data/settings.json: user_id -> {"weather", "knowledge"}.
+
+    def settings_of(self, user_id):
+        return self.settings.get(user_id, {})
+
+    def set_settings(self, user_id, section, values):
+        with self.lock:
+            self.settings.setdefault(user_id, {})[section] = values
+            self._write("settings.json", self.settings)
+        for esn in self.robots_of(user_id):
+            write_perbot(esn)
 
 
 STORE = Store(CFG["data_dir"])
+
+
+def write_perbot(esn):
+    """Give wire-pod a robot's settings (its owner's), in perbot_dir/<esn>.json; wire-pod reads them for every
+    weather and knowledge graph request (wire-pod-patch/). An unowned robot's file is removed: it uses wire-pod's
+    global settings."""
+    d = CFG["perbot_dir"]
+    if not d:
+        return
+    path = os.path.join(d, esn + ".json")
+    owner = STORE.owner_of(esn)
+    settings = STORE.settings_of(owner) if owner else {}
+    try:
+        os.makedirs(d, exist_ok=True)
+        if not settings:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(settings, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        log.error("couldn't write %s: %s", path, e)
 
 
 def public_user(user):
@@ -176,7 +260,7 @@ HOP_BY_HOP = {"connection", "keep-alive", "transfer-encoding", "te", "trailer", 
 
 class OtaOnlyHandler(BaseHTTPRequestHandler):
     """Plain-HTTP listener for OS updates only (ota_http_port), for robots that can't do modern HTTPS."""
-    server_version = "VectorPlusPlusCommunity/1.0"
+    server_version = "VTCS/1.0"
 
     def log_message(self, fmt, *args):
         log.info("%s (http) %s", self.client_address[0], fmt % args)
@@ -195,10 +279,26 @@ class OtaOnlyHandler(BaseHTTPRequestHandler):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "VectorPlusPlusCommunity/1.0"
+    server_version = "VTCS/1.0"
 
     def log_message(self, fmt, *args):
         log.info("%s %s", self.client_address[0], fmt % args)
+
+    def end_headers(self):
+        # The website's account page calls this server from another origin.
+        origin = self.headers.get("Origin") or ""
+        if origin in CFG["site_origins"]:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        super().end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def send_json(self, status, body):
         data = json.dumps(body).encode("utf-8")
@@ -229,8 +329,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.ota(path)
         if path.startswith(PROXIED):
             return self.proxy("GET")
-        if path in ("/v1", ""):
-            return self.send_json(200, {"status": "ok", "server": "vector-plus-plus-community"})
+        if path in ("", "/account"):
+            return self.portal()
+        if path == "/v1/me":
+            return self.me()
+        if path == "/v1":
+            return self.send_json(200, {"status": "ok", "server": "vtcs"})
         if path.startswith("/v1/session_cert/"):
             return self.session_cert(path[len("/v1/session_cert/"):])
         return self.send_json(404, error("not_found", "Unknown path."))
@@ -239,6 +343,9 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0].rstrip("/")
         if path.startswith(PROXIED):
             return self.proxy("POST")
+        if path == "/v1/logout":
+            STORE.end_session(self.token())
+            return self.send_json(200, {"status": "signed_out"})
         body = self.read_json()
         if body is None:
             return self.send_json(400, error("bad_request", "Send a JSON body."))
@@ -256,9 +363,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(409, error("account_exists", "An account with that email already exists."))
             log.info("created account %s", username)
             return self.send_json(200, {"user": public_user(user)})
+        if path == "/v1/robots/release":
+            user_id = self.user_id()
+            esn = str(body.get("esn") or "").strip().lower()
+            if not user_id:
+                return self.send_json(401, error("not_signed_in", "Sign in to use this."))
+            if STORE.owner_of(esn) != user_id:
+                return self.send_json(403, error("not_your_robot", "That robot isn't set up on your account."))
+            STORE.release(esn)
+            log.info("robot %s released by user %s", esn, user_id)
+            return self.send_json(200, {"status": "released"})
         if path == "/v1/sessions":
             user = STORE.check_password(username, password)
             if user is None:
+                time.sleep(1)  # slows down password guessing
                 return self.send_json(403, error("invalid_credentials", "Wrong email or password."))
             token, s = STORE.new_session(user)
             log.info("signed in %s", username)
@@ -269,12 +387,45 @@ class Handler(BaseHTTPRequestHandler):
             })
         return self.send_json(404, error("not_found", "Unknown path."))
 
-    def proxy(self, method):
-        """Pass a request through to wire-pod's web server, for signed-in users only. Streams the answer (the
-        camera feed never ends), so nothing is buffered."""
+    def token(self):
         auth = self.headers.get("Authorization") or ""
-        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        if not STORE.valid_token(token):
+        return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+
+    def user_id(self):
+        return STORE.user_id_for(self.token())
+
+    def portal(self):
+        self.send_response(302)
+        self.send_header("Location", CFG["portal_url"])
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def me(self):
+        """The account page's view: who's signed in, and their robots (with what wire-pod knows of each)."""
+        user_id = self.user_id()
+        if not user_id:
+            return self.send_json(401, error("not_signed_in", "Sign in to use this."))
+        email = next((u["email"] for u in STORE.users.values() if u["user_id"] == user_id), "")
+        try:
+            with urllib.request.urlopen(CFG["wirepod_url"].rstrip("/") + "/api-sdk/get_sdk_info", timeout=10) as r:
+                known = {str(b.get("esn", "")).lower(): b for b in json.loads(r.read().decode("utf-8")).get("robots") or []}
+        except (urllib.error.URLError, OSError, ValueError):
+            known = {}
+        robots = [{"esn": esn, "claimed": STORE.robots[esn]["claimed"], "ip": known.get(esn, {}).get("ip_address", ""),
+                   "seen": esn in known} for esn in STORE.robots_of(user_id)]
+        return self.send_json(200, {"email": email, "robots": robots})
+
+    def query(self):
+        return urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+
+    def proxy(self, method):
+        """The extra features, for signed-in users, on their own robots only:
+            /api-sdk/get_sdk_info          wire-pod's list, cut down to the user's robots
+            /api-sdk/<x>?serial=, /cam-stream?serial=   passed through to wire-pod if the user owns that robot
+            /api/{get,set}_{weather,kg}_api              the user's own settings, kept here (see write_perbot)
+        Everything else under /api/ is wire-pod's admin API, and isn't reachable from outside."""
+        user_id = self.user_id()
+        if not user_id:
             return self.send_json(401, error("not_signed_in", "Sign in to use this."))
         body = None
         if method == "POST":
@@ -282,6 +433,70 @@ class Handler(BaseHTTPRequestHandler):
             if length < 0 or length > 1 << 20:
                 return self.send_json(413, error("too_large", "Request body too large."))
             body = self.rfile.read(length) if length else b""
+        path = self.path.split("?", 1)[0].rstrip("/")
+        if path.startswith("/api/"):
+            return self.own_settings(user_id, path[len("/api/"):], body)
+        if path == "/api-sdk/get_sdk_info":
+            return self.sdk_info(user_id)
+        serial = (self.query().get("serial") or [""])[0].strip().lower()
+        if not ESN.match(serial):
+            return self.send_json(400, error("bad_serial", "Say which robot (serial=<ESN>)."))
+        if STORE.owner_of(serial) != user_id:
+            return self.send_json(403, error("not_your_robot", "That robot isn't set up on your account."))
+        return self.pass_through(method, body)
+
+    def sdk_info(self, user_id):
+        try:
+            with urllib.request.urlopen(CFG["wirepod_url"].rstrip("/") + "/api-sdk/get_sdk_info", timeout=15) as r:
+                info = json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError:
+            info = {"robots": []}  # wire-pod answers 500 while no robot has authenticated
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            return self.send_json(502, error("wirepod_unreachable", "Couldn't reach wire-pod at %s (%s)." % (CFG["wirepod_url"], e)))
+        mine = set(STORE.robots_of(user_id))
+        info["robots"] = [r for r in info.get("robots") or [] if str(r.get("esn", "")).lower() in mine]
+        info.pop("global_guid", None)
+        return self.send_json(200, info)
+
+    def own_settings(self, user_id, name, body):
+        if name == "get_weather_api":
+            w = STORE.settings_of(user_id).get("weather") or {}
+            return self.send_json(200, {"enable": bool(w.get("enable")), "provider": w.get("provider", ""),
+                                        "key": w.get("key", ""), "unit": w.get("unit", "")})
+        if name == "get_kg_api":
+            return self.send_json(200, STORE.settings_of(user_id).get("knowledge") or {"enable": False, "provider": ""})
+        if name not in ("set_weather_api", "set_kg_api"):
+            return self.send_json(403, error("admin_only", "That's a server setting. Change it in wire-pod's web interface."))
+        try:
+            b = json.loads((body or b"").decode("utf-8"))
+            assert isinstance(b, dict)
+        except (ValueError, UnicodeDecodeError, AssertionError):
+            return self.send_json(400, error("bad_request", "Send a JSON body."))
+        if name == "set_weather_api":
+            provider = str(b.get("provider") or "").strip()
+            if provider not in ("", "openweathermap.org", "weatherapi.com"):
+                return self.send_json(400, error("bad_provider", "Unknown weather provider."))
+            values = {"enable": provider != "", "provider": provider, "key": str(b.get("key") or "").strip()}
+            if b.get("unit") in ("F", "C"):
+                values["unit"] = b["unit"]
+            STORE.set_settings(user_id, "weather", values)
+        else:
+            keep = {"enable": bool, "provider": str, "key": str, "id": str, "model": str, "intentgraph": bool, "robotName": str,
+                    "openai_prompt": str, "openai_voice": str, "openai_voice_with_english": bool, "save_chat": bool,
+                    "commands_enable": bool, "endpoint": str, "top_p": float, "temp": float}
+            values = {}
+            for k, t in keep.items():
+                if k in b and b[k] is not None:
+                    try:
+                        values[k] = t(b[k]).strip() if t is str else t(b[k])
+                    except (TypeError, ValueError):
+                        return self.send_json(400, error("bad_value", "Bad value for " + k + "."))
+            STORE.set_settings(user_id, "knowledge", values)
+        return self.send_json(200, {"status": "saved"})
+
+    def pass_through(self, method, body):
+        """Pass the request to wire-pod's web server. Streams the answer (the camera feed never ends), so nothing
+        is buffered."""
         req = urllib.request.Request(CFG["wirepod_url"].rstrip("/") + self.path, data=body, method=method)
         for k, v in self.headers.items():
             if k.lower() not in HOP_BY_HOP:
@@ -363,6 +578,12 @@ class Handler(BaseHTTPRequestHandler):
         esn = name.rsplit("_", 1)[-1].lower()
         if not ESN.match(esn):
             return self.send_json(400, error("bad_esn", "Expected <name>_<8-digit ESN>."))
+        # The app fetches this while it's connected to the robot over Bluetooth during setup, so it's where a
+        # robot gets claimed: by the signed-in account, if no one has it yet. Someone else's robot: no cert.
+        user_id = self.user_id()
+        owner = STORE.owner_of(esn)
+        if owner and owner != user_id:
+            return self.send_json(403, error("not_your_robot", "This robot is set up on another account."))
         url = CFG["wirepod_url"].rstrip("/") + "/session-certs/" + esn
         try:
             with urllib.request.urlopen(url, timeout=10) as r:
@@ -372,6 +593,8 @@ class Handler(BaseHTTPRequestHandler):
                                   error("no_cert", "wire-pod has no session certificate for %s yet (HTTP %d)." % (esn, e.code)))
         except (urllib.error.URLError, OSError) as e:
             return self.send_json(502, error("wirepod_unreachable", "Couldn't reach wire-pod at %s (%s)." % (CFG["wirepod_url"], e)))
+        if user_id and not owner:
+            STORE.claim(esn, user_id)
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(cert)))
@@ -379,8 +602,22 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(cert)
 
 
+def admin(args):
+    """python3 vpp_server.py robots | release <esn>   (stop the server first: it keeps its own copy of the data)"""
+    emails = {u["user_id"]: u["email"] for u in STORE.users.values()}
+    if args[0] == "robots":
+        for esn, r in sorted(STORE.robots.items()):
+            print("%s  %s  (since %s)" % (esn, emails.get(r["user_id"], r["user_id"]), r["claimed"]))
+    elif args[0] == "release" and len(args) == 2:
+        print("released" if STORE.release(args[1].lower()) else "no one owns " + args[1])
+    else:
+        sys.exit(admin.__doc__)
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if len(sys.argv) > 1:
+        return admin(sys.argv[1:])
     server = ThreadingHTTPServer((CFG["host"], int(CFG["port"])), Handler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -394,7 +631,7 @@ def main():
         plain = ThreadingHTTPServer((CFG["host"], int(CFG["ota_http_port"])), OtaOnlyHandler)
         threading.Thread(target=plain.serve_forever, daemon=True).start()
         log.info("OS updates also over plain HTTP on port %s", CFG["ota_http_port"])
-    log.info("Vector++ community server on https://%s:%s (wire-pod: %s)", CFG["host"], CFG["port"], CFG["wirepod_url"])
+    log.info("VTCS (Vector Tech Community Server) on https://%s:%s (wire-pod: %s)", CFG["host"], CFG["port"], CFG["wirepod_url"])
     try:
         server.serve_forever()
     except KeyboardInterrupt:

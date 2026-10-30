@@ -109,6 +109,11 @@ namespace WirePod
 					using (HttpClient httpClient = new HttpClient(new AndroidClientHandler()))
 					{
 						httpClient.Timeout = TimeSpan.FromSeconds(15.0);
+						// Signed in: the server gives this robot to the account (first come), and refuses someone else's.
+						if (!string.IsNullOrEmpty(WirePodConfig.SessionToken))
+						{
+							httpClient.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", "Bearer " + WirePodConfig.SessionToken);
+						}
 						string result = httpClient.GetStringAsync(url).Result;
 						DAS.Event("WirePod.WirePodConfig.FetchCert", string.Format("{0}: {1} bytes", url, result.Length));
 						return result;

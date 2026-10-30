@@ -8,13 +8,14 @@ import android.widget.TextView;
 
 import org.json.JSONObject;
 
-/** Weather provider setup for wire-pod (replaces its web page). */
+/** Weather setup: the account's own provider and key (kept by the community server), and Vector's location. */
 public class WeatherActivity extends Screen {
     private static final String[] NAMES = {"None", "OpenWeatherMap", "WeatherAPI"};
     private static final String[] IDS = {"", "openweathermap.org", "weatherapi.com"};
 
     private RadioGroup group;
     private EditText key;
+    private EditText location;
     private TextView status;
 
     @Override
@@ -36,6 +37,8 @@ public class WeatherActivity extends Screen {
         group.check(100);
         body.addView(group);
         key = field("API key", "", false);
+        heading("Location");
+        location = field("City, e.g. Austin, Texas", "", false);
         button("Save", new View.OnClickListener() {
             public void onClick(View v) {
                 save();
@@ -65,7 +68,20 @@ public class WeatherActivity extends Screen {
                         key.setText(j.optString("weatherKey", j.optString("key", "")));
                     }
                 });
-                return "Loaded from wire-pod.";
+                String loc = "";
+                try {
+                    loc = new JSONObject(Wp.sdk(WeatherActivity.this, "get_sdk_settings", null))
+                            .optString("default_location", "");
+                } catch (Exception ignored) {
+                    // older wire-pod, or the robot didn't answer: leave the field empty
+                }
+                final String l = loc;
+                onUi(new Runnable() {
+                    public void run() {
+                        location.setText(l);
+                    }
+                });
+                return "Loaded.";
             }
         });
     }
@@ -73,12 +89,16 @@ public class WeatherActivity extends Screen {
     private void save() {
         final String provider = IDS[selected()];
         final String k = key.getText().toString().trim();
+        final String l = location.getText().toString().trim();
         background(status, "Saving…", new Task() {
             public String run() throws Exception {
                 JSONObject b = new JSONObject();
                 b.put("provider", provider);
                 b.put("key", k);
                 Wp.postJson(WeatherActivity.this, "/api/set_weather_api", b);
+                if (l.length() > 0) {
+                    Wp.sdk(WeatherActivity.this, "location", "location=" + Wp.enc(l));
+                }
                 return "Saved.";
             }
         });
