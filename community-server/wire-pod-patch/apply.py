@@ -138,4 +138,9 @@ edit("initwirepod/startserver.go", [
 edit("servers/token/token.go", [("p, _ := peer.FromContext(ctx)", "p, _ := peer.FromContext(vars.WithRealPeer(ctx))", 2)])
 edit("servers/jdocs/server.go", [("p, _ := peer.FromContext(ctx)", "p, _ := peer.FromContext(vars.WithRealPeer(ctx))", 2)])
 edit("servers/jdocs/botInfoStorer.go", [("p, _ := peer.FromContext(ctx)", "p, _ := peer.FromContext(vars.WithRealPeer(ctx))", 1)])
+# Connection check: robots on slower internet connections time out before all of the check's audio frames arrive
+# (they got 7-42 frames), and then say they can't reach the server. A few frames prove the connection works.
+edit("servers/chipper/connectioncheck.go", [
+    ("\t\t\tif frames >= framesPerRequest {", "\t\t\tif frames >= framesPerRequest || frames >= 5 {", 1),
+])
 print("done")
