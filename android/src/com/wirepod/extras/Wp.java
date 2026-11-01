@@ -30,9 +30,9 @@ final class Wp {
         return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
+    /** The VTCS app always talks to VTCS (WirePodConfig.kFixedServer); an address saved by an older version is ignored. */
     static String server(Context c) {
-        String s = prefs(c).getString(KEY_SERVER, null);
-        return (s == null || s.length() == 0) ? "vicapi.pvic.xyz:443" : s;
+        return "server.vectortech.dev:443";
     }
 
     static boolean extrasEnabled(Context c) {

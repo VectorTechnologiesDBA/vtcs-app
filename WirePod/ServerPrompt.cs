@@ -21,6 +21,15 @@ namespace WirePod
 		/// </summary>
 		public static void Run(Action<bool> onDone)
 		{
+			// The VTCS app always uses VTCS (WirePodConfig.Server), so there's nothing to ask.
+			if (WirePodConfig.kFixedServer)
+			{
+				Task.Run(delegate
+				{
+					onDone(true);
+				});
+				return;
+			}
 			// Sign-in shows its "logging in" overlay (a DialogFragment) at the same moment it sends the request.
 			// Give it time to appear so this dialog stacks above it rather than underneath.
 			Task.Delay(ServerPrompt.kOverlaySettleMs).ContinueWith(delegate(Task _)

@@ -162,7 +162,17 @@ foreach ($link in @(
 }
 $agreement = [regex]'(<string name="SignUpLoginView\.agreement">)[^<]*(</string>)'
 if (-not $agreement.IsMatch($sx)) { throw "strings.xml: SignUpLoginView.agreement not found" }
-$sx = $agreement.Replace($sx, '${1}Your account only exists on this phone. Nothing is sent to Anki.${2}')
+$sx = $agreement.Replace($sx, '${1}Your account is kept on the Vector Tech Community Server. Nothing is sent to Anki.${2}')
+# Error messages talk about Vector Tech (VTCS), not Anki: e.g. "CAN'T REACH ANKI", "unable to reach Anki Services",
+# "already associated with an Anki account". Only message text: help links and string names are left alone.
+$errorText = [regex]'(<string name="[^"]*Error[^"]*">)([^<]*)(</string>)'
+$sx = $errorText.Replace($sx, {
+	param($m)
+	$t = $m.Groups[2].Value
+	if ($t.Contains("://")) { return $m.Value }
+	$t = $t -creplace "Anki [Ss]ervices", "Vector Tech" -creplace "ANKI", "VECTOR TECH" -creplace "an Anki", "a Vector Tech" -creplace "Anki", "Vector Tech"
+	return $m.Groups[1].Value + $t + $m.Groups[3].Value
+})
 $learnMore = [regex]'(<string name="WelcomeAgreementView\.messageLink">)[^<]*(</string>)'
 if (-not $learnMore.IsMatch($sx)) { throw "strings.xml: WelcomeAgreementView.messageLink not found" }
 $sx = $learnMore.Replace($sx, '${1}${2}')

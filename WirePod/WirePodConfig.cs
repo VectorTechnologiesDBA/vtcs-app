@@ -22,7 +22,7 @@ namespace WirePod
 		{
 			get
 			{
-				string text = WirePodConfig.Prefs.GetString(WirePodConfig.kServerKey, null);
+				string text = WirePodConfig.kFixedServer ? null : WirePodConfig.Prefs.GetString(WirePodConfig.kServerKey, null);
 				if (string.IsNullOrEmpty(text))
 				{
 					return WirePodConfig.kDefaultHost + ":" + WirePodConfig.kDefaultWebPort;
@@ -35,7 +35,7 @@ namespace WirePod
 		{
 			get
 			{
-				return !string.IsNullOrEmpty(WirePodConfig.Prefs.GetString(WirePodConfig.kServerKey, null));
+				return WirePodConfig.kFixedServer || !string.IsNullOrEmpty(WirePodConfig.Prefs.GetString(WirePodConfig.kServerKey, null));
 			}
 		}
 
@@ -253,6 +253,10 @@ namespace WirePod
 		}
 
 		public const string kDefaultHost = "server.vectortech.dev";
+
+		/// <summary>The VTCS app always talks to VTCS (kDefaultHost): no server prompt, and any address saved by an
+		/// older version is ignored.</summary>
+		public const bool kFixedServer = true;
 
 		public const int kDefaultWebPort = 443;
 
