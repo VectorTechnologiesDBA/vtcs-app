@@ -129,5 +129,8 @@ edit("wirepod/ttr/intentparam.go", [
 edit("initwirepod/startserver.go", [
     ("certPub, _ = os.ReadFile(\"../certs/cert.crt\")", "certPub, _ = os.ReadFile(vars.CertPath)", 1),
     ("certPriv, err = os.ReadFile(\"../certs/cert.key\")", "certPriv, err = os.ReadFile(vars.KeyPath)", 1),
+    # Offer HTTP/2 in ALPN. Robots send gRPC regardless, but proxies (Cloudflare's tunnel) only speak HTTP/2 to an
+    # origin that offers it, and fall back to HTTP/1.1, which cmux hands to the REST handler instead of gRPC.
+    ("\t\t\tCipherSuites: nil,\n", "\t\t\tCipherSuites: nil,\n\t\t\tNextProtos:   []string{\"h2\", \"http/1.1\"},\n", 2),
 ])
 print("done")

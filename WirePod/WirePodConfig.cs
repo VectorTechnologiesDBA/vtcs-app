@@ -156,9 +156,9 @@ namespace WirePod
 		/// </summary>
 		public static string OtaUrl(string ankiOtaUrl)
 		{
-			// The community server hosts your CFW's updates at /vic/, also over plain HTTP (ota_http_port, 8088): a robot
-			// in recovery runs old firmware that may not manage modern HTTPS.
-			return "http://" + WirePodConfig.GetHost(WirePodConfig.Server) + ":" + WirePodConfig.kOtaHttpPort + "/vic/full/latest.ota";
+			// The community server hosts your CFW's updates at /vic/, also over plain HTTP (port 80, through the Cloudflare
+			// tunnel): a robot in recovery runs old firmware that may not manage modern HTTPS.
+			return "http://" + WirePodConfig.GetHost(WirePodConfig.Server) + "/vic/full/latest.ota";
 		}
 
 		/// <summary>
@@ -252,7 +252,7 @@ namespace WirePod
 			}
 		}
 
-		public const string kDefaultHost = "vicapi.pvic.xyz";
+		public const string kDefaultHost = "server.vectortech.dev";
 
 		public const int kDefaultWebPort = 443;
 
@@ -261,8 +261,6 @@ namespace WirePod
 
 		private const string kServerKey = "server";
 
-		/// <summary>The community server's plain-HTTP port for OS updates (its ota_http_port setting).</summary>
-		private const int kOtaHttpPort = 8088;
 
 		/// <summary>The session token from sign-in; the extra features send it to the server (Authorization: Bearer).</summary>
 		public const string kSessionTokenKey = "session_token";

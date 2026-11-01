@@ -18,3 +18,7 @@ tools/
 # Community server: accounts and local settings
 community-server/data/
 community-server/config.json
+community-server/install-tunnel.sh
+community-server/cfw/__pycache__/
+vectortech-site/
+vtcs_setup_screen.gif
