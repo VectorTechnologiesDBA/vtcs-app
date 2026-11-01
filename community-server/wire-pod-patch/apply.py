@@ -46,6 +46,7 @@ def in_func(rel, func_sig, old, new, count):
 
 
 shutil.copy(os.path.join(HERE, "perbot.go"), os.path.join(ROOT, "vars", "perbot.go"))
+shutil.copy(os.path.join(HERE, "realpeer.go"), os.path.join(ROOT, "vars", "realpeer.go"))
 shutil.copy(os.path.join(HERE, "houndify_perbot.go"), os.path.join(ROOT, "wirepod", "preqs", "houndify_perbot.go"))
 # The Linux package's entry point (data in /etc/wire-pod/wire-pod, settings from /etc/wire-pod/config.ini).
 os.makedirs(os.path.join(sys.argv[1], "chipper", "cmd", "packaged"), exist_ok=True)
@@ -133,4 +134,8 @@ edit("initwirepod/startserver.go", [
     # origin that offers it, and fall back to HTTP/1.1, which cmux hands to the REST handler instead of gRPC.
     ("\t\t\tCipherSuites: nil,\n", "\t\t\tCipherSuites: nil,\n\t\t\tNextProtos:   []string{\"h2\", \"http/1.1\"},\n", 2),
 ])
+# Behind the Cloudflare tunnel, see each robot's own address (Cf-Connecting-Ip) instead of 127.0.0.1 (realpeer.go).
+edit("servers/token/token.go", [("p, _ := peer.FromContext(ctx)", "p, _ := peer.FromContext(vars.WithRealPeer(ctx))", 2)])
+edit("servers/jdocs/server.go", [("p, _ := peer.FromContext(ctx)", "p, _ := peer.FromContext(vars.WithRealPeer(ctx))", 2)])
+edit("servers/jdocs/botInfoStorer.go", [("p, _ := peer.FromContext(ctx)", "p, _ := peer.FromContext(vars.WithRealPeer(ctx))", 1)])
 print("done")
