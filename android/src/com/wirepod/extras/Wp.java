@@ -32,7 +32,7 @@ final class Wp {
 
     /** The VTCS app always talks to VTCS (WirePodConfig.kFixedServer); an address saved by an older version is ignored. */
     static String server(Context c) {
-        return "server.vectortech.dev:443";
+        return "server.vectortech.dev:8443";
     }
 
     static boolean extrasEnabled(Context c) {

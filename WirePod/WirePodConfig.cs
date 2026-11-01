@@ -22,7 +22,11 @@ namespace WirePod
 		{
 			get
 			{
-				string text = WirePodConfig.kFixedServer ? null : WirePodConfig.Prefs.GetString(WirePodConfig.kServerKey, null);
+				if (WirePodConfig.kFixedServer)
+				{
+					return WirePodConfig.kDefaultHost + ":" + WirePodConfig.kFixedPort;
+				}
+				string text = WirePodConfig.Prefs.GetString(WirePodConfig.kServerKey, null);
 				if (string.IsNullOrEmpty(text))
 				{
 					return WirePodConfig.kDefaultHost + ":" + WirePodConfig.kDefaultWebPort;
@@ -156,9 +160,9 @@ namespace WirePod
 		/// </summary>
 		public static string OtaUrl(string ankiOtaUrl)
 		{
-			// The community server hosts your CFW's updates at /vic/, also over plain HTTP (port 80, through the Cloudflare
-			// tunnel): a robot in recovery runs old firmware that may not manage modern HTTPS.
-			return "http://" + WirePodConfig.GetHost(WirePodConfig.Server) + "/vic/full/latest.ota";
+			// The community server hosts your CFW's updates at /vic/, also over plain HTTP (ota_http_port, 8088): a robot
+			// in recovery runs old firmware that may not manage modern HTTPS.
+			return "http://" + WirePodConfig.GetHost(WirePodConfig.Server) + ":" + WirePodConfig.kOtaHttpPort + "/vic/full/latest.ota";
 		}
 
 		/// <summary>
@@ -258,8 +262,14 @@ namespace WirePod
 		/// older version is ignored.</summary>
 		public const bool kFixedServer = true;
 
+		/// <summary>VTCS's accounts API port (the Pi's port 443 is wire-pod's voice server).</summary>
+		public const int kFixedPort = 8443;
+
 		public const int kDefaultWebPort = 443;
 
+
+		/// <summary>The community server's plain-HTTP port for OS updates (its ota_http_port setting).</summary>
+		private const int kOtaHttpPort = 8088;
 
 		private const string kPrefsName = "wirepod";
 
