@@ -43,6 +43,7 @@ import os
 import re
 import secrets
 import socket
+import tarfile
 import ssl
 import sys
 import threading
@@ -270,6 +271,32 @@ def robot_reachable(esn):
             except ValueError:
                 return True
     return True
+
+
+_ota_versions = {}
+
+
+def ota_version(path):
+    """The update_version in an OTA file's manifest.ini (cached by modification time), or "" if unreadable."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return ""
+    cached = _ota_versions.get(path)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    version = ""
+    try:
+        with tarfile.open(path, "r:*") as t:
+            member = t.next()
+            if member is not None and member.name.endswith("manifest.ini"):
+                text = t.extractfile(member).read().decode("utf-8", "replace")
+                m = re.search(r"update_version\s*=\s*(\S+)", text)
+                version = m.group(1) if m else ""
+    except (OSError, tarfile.TarError):
+        pass
+    _ota_versions[path] = (mtime, version)
+    return version
 
 
 def relay_port(esn):
@@ -730,14 +757,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def ota(self, path, head=False):
         """An OS update file from ota_dir (e.g. /vic/full/latest.ota -> ota_dir/full/latest.ota), with Range support
-        so interrupted downloads can resume."""
+        so interrupted downloads can resume.
+
+        A robot checking for updates asks for {full,diff}/<its own version>.ota: if there's no such file it gets
+        full/latest.ota when that's a different version, or 403 (what the robot reads as "no update") when it's
+        already on it."""
         rel = path[len("/vic/"):]
         if not OTA_PATH.match(rel):
             return self.send_json(404, error("not_found", "No such update."))
         root = os.path.realpath(CFG["ota_dir"])
         full = os.path.realpath(os.path.join(root, *rel.split("/")))
-        if not full.startswith(root + os.sep) or not os.path.isfile(full):
+        if not full.startswith(root + os.sep):
             return self.send_json(404, error("not_found", "No such update: " + rel))
+        if not os.path.isfile(full):
+            latest = os.path.join(root, "full", "latest.ota")
+            asked = rel.split("/", 1)[1][:-len(".ota")]
+            newest = ota_version(latest)
+            if not newest or asked == newest:
+                return self.send_json(403, error("no_update", "No update available."))
+            full = latest
         size = os.path.getsize(full)
         start, end = 0, size - 1
         m = re.match(r"bytes=(\d*)-(\d*)$", self.headers.get("Range") or "")
