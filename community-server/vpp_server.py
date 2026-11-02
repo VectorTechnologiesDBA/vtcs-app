@@ -314,7 +314,7 @@ class Relay(threading.Thread):
     def __init__(self):
         super().__init__(daemon=True)
         self.active = {}    # esn -> (socket inode, listening socket)
-        self.rejected = {}  # esn -> inode that failed verification
+        self.rejected = {}  # esn -> (inode, time) of a link that failed verification
 
     def run(self):
         os.makedirs(CFG["relay_ok_dir"], exist_ok=True)
@@ -340,13 +340,16 @@ class Relay(threading.Thread):
             except OSError:
                 continue
             seen.add(esn)
-            if (esn in self.active and self.active[esn][0] == ino) or self.rejected.get(esn) == ino:
+            if esn in self.active and self.active[esn][0] == ino:
+                continue
+            # A link that failed its check is retried every minute (e.g. the robot linked before its gateway was up).
+            if self.rejected.get(esn, (None, 0))[0] == ino and time.time() - self.rejected[esn][1] < 60:
                 continue
             self.close_link(esn)
             if self.verify(esn, path):
                 self.open_link(esn, path, ino)
             else:
-                self.rejected[esn] = ino
+                self.rejected[esn] = (ino, time.time())
         for esn in list(self.active):
             if esn not in seen:
                 self.close_link(esn)
