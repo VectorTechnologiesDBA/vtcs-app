@@ -41,6 +41,20 @@ func WeatherFor(esn string) WeatherConfig {
 	return cfg
 }
 
+// LocationFor returns the weather location the robot's owner set on the community server ("" if none). Robots out
+// on the internet can't be reached through the SDK to change their own settings, so the server keeps it.
+func LocationFor(esn string) string {
+	if data, ok := perBotFile(esn); ok {
+		var f struct {
+			Location string `json:"location"`
+		}
+		if json.Unmarshal(data, &f) == nil {
+			return f.Location
+		}
+	}
+	return ""
+}
+
 // KnowledgeFor returns the knowledge graph settings to use for a robot: its owner's, over the global ones.
 func KnowledgeFor(esn string) KnowledgeConfig {
 	cfg := APIConfig.Knowledge

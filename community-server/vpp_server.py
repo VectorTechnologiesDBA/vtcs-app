@@ -190,6 +190,19 @@ class Store:
             if self.sessions.pop(token, None) is not None:
                 self._write("sessions.json", self.sessions)
 
+    def set_location(self, esn, location):
+        """The robot's weather location, kept here (robots out on the internet can't be reached to set their own)."""
+        with self.lock:
+            r = self.robots.get(esn)
+            if not r:
+                return
+            if location:
+                r["location"] = location
+            else:
+                r.pop("location", None)
+            self._write("robots.json", self.robots)
+        write_perbot(esn)
+
     def robots_of(self, user_id):
         return sorted(esn for esn, r in self.robots.items() if r["user_id"] == user_id)
 
@@ -218,7 +231,10 @@ def write_perbot(esn):
         return
     path = os.path.join(d, esn + ".json")
     owner = STORE.owner_of(esn)
-    settings = STORE.settings_of(owner) if owner else {}
+    settings = dict(STORE.settings_of(owner)) if owner else {}
+    location = (STORE.robots.get(esn) or {}).get("location") if owner else None
+    if location:
+        settings["location"] = location
     try:
         os.makedirs(d, exist_ok=True)
         if not settings:
@@ -443,7 +459,29 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(400, error("bad_serial", "Say which robot (serial=<ESN>)."))
         if STORE.owner_of(serial) != user_id:
             return self.send_json(403, error("not_your_robot", "That robot isn't set up on your account."))
+        # Weather location and settings: answered here. Going through wire-pod would make it connect to the robot
+        # itself, which fails (and hangs the app) for robots on other networks.
+        if path == "/api-sdk/location":
+            STORE.set_location(serial, (self.query().get("location") or [""])[0].strip()[:100])
+            return self.send_json(200, {"status": "saved"})
+        if path == "/api-sdk/get_sdk_settings":
+            return self.sdk_settings(serial)
         return self.pass_through(method, body)
+
+    def sdk_settings(self, serial):
+        """wire-pod's settings for the robot if it answers quickly, with the location kept here; just the location
+        if the robot can't be reached."""
+        info = {}
+        try:
+            url = CFG["wirepod_url"].rstrip("/") + "/api-sdk/get_sdk_settings?serial=" + serial
+            with urllib.request.urlopen(url, timeout=6) as r:
+                info = json.loads(r.read().decode("utf-8"))
+        except (urllib.error.URLError, OSError, ValueError):
+            pass
+        location = (STORE.robots.get(serial) or {}).get("location")
+        if location or "default_location" not in info:
+            info["default_location"] = location or ""
+        return self.send_json(200, info)
 
     def sdk_info(self, user_id):
         try:

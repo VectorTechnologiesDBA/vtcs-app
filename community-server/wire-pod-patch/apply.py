@@ -143,4 +143,10 @@ edit("servers/jdocs/botInfoStorer.go", [("p, _ := peer.FromContext(ctx)", "p, _ 
 edit("servers/chipper/connectioncheck.go", [
     ("\t\t\tif frames >= framesPerRequest {", "\t\t\tif frames >= framesPerRequest || frames >= 5 {", 1),
 ])
+# Weather location: the one the owner set on the community server (per-bot file) wins over the robot's own setting.
+edit("wirepod/ttr/intentparam.go", [
+    ("\t\t\tbotLocation = robotSettings.DefaultLocation\n",
+     "\t\t\tbotLocation = robotSettings.DefaultLocation\n"
+     "\t\t\tif l := vars.LocationFor(botSerial); l != \"\" {\n\t\t\t\tbotLocation = l\n\t\t\t}\n", 2),
+])
 print("done")
