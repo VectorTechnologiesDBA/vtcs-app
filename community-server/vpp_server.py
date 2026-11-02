@@ -42,6 +42,7 @@ import logging
 import os
 import re
 import secrets
+import socket
 import ssl
 import sys
 import threading
@@ -66,6 +67,8 @@ DEFAULTS = {
     "ota_dir": os.path.join(HERE, "ota"),
     "ota_http_port": 0,
     "perbot_dir": "/etc/wire-pod/per-bot",
+    "relay_dir": "/run/vtcs-relay",
+    "relay_ok_dir": "/run/vtcs-relay-ok",
     "portal_url": "https://vectortech.dev/account.html",
     "site_origins": ["https://vectortech.dev", "https://www.vectortech.dev"],
 }
@@ -250,8 +253,11 @@ def write_perbot(esn):
         log.error("couldn't write %s: %s", path, e)
 
 
-def robot_is_local(esn):
-    """Whether wire-pod reaches the robot at a private (home network) address. Unknown counts as local."""
+def robot_reachable(esn):
+    """Whether wire-pod can reach the robot: through a verified relay link (see Relay), or directly at a private
+    (home network) address. Unknown counts as reachable."""
+    if os.path.exists(os.path.join(CFG["relay_ok_dir"], esn)):
+        return True
     try:
         with urllib.request.urlopen(CFG["wirepod_url"].rstrip("/") + "/api-sdk/get_sdk_info", timeout=5) as r:
             robots = json.loads(r.read().decode("utf-8")).get("robots") or []
@@ -264,6 +270,142 @@ def robot_is_local(esn):
             except ValueError:
                 return True
     return True
+
+
+def relay_port(esn):
+    """The local port a relayed robot's control API is reached on (wire-pod-patch/relay.go uses the same)."""
+    return 40000 + int(esn, 16) % 20000
+
+
+class Relay(threading.Thread):
+    """Robots on other networks hold an SSH link to this server (vtcs-relay-sshd, port 2222) that ends in a Unix
+    socket, relay_dir/<esn>.sock, leading to the robot's control API (vic-gateway). Every robot shares the link key
+    from VictorOS, so a link is only used once the robot behind it shows the TLS certificate wire-pod recorded for
+    that ESN (only the real robot holds its key). Then it's served on 127.0.0.1:relay_port(esn), and
+    relay_ok_dir/<esn> tells wire-pod to use that address."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.active = {}    # esn -> (socket inode, listening socket)
+        self.rejected = {}  # esn -> inode that failed verification
+
+    def run(self):
+        os.makedirs(CFG["relay_ok_dir"], exist_ok=True)
+        for f in os.listdir(CFG["relay_ok_dir"]):
+            self._unmark(f)
+        while True:
+            try:
+                self.scan()
+            except Exception as e:  # keep relaying whatever happens
+                log.error("relay scan: %s", e)
+            time.sleep(10)
+
+    def scan(self):
+        seen = set()
+        names = os.listdir(CFG["relay_dir"]) if os.path.isdir(CFG["relay_dir"]) else []
+        for name in names:
+            m = re.match(r"^([0-9a-f]{8})\.sock$", name)
+            if not m:
+                continue
+            esn, path = m.group(1), os.path.join(CFG["relay_dir"], name)
+            try:
+                ino = os.stat(path).st_ino
+            except OSError:
+                continue
+            seen.add(esn)
+            if (esn in self.active and self.active[esn][0] == ino) or self.rejected.get(esn) == ino:
+                continue
+            self.close_link(esn)
+            if self.verify(esn, path):
+                self.open_link(esn, path, ino)
+            else:
+                self.rejected[esn] = ino
+        for esn in list(self.active):
+            if esn not in seen:
+                self.close_link(esn)
+
+    def verify(self, esn, path):
+        try:
+            with urllib.request.urlopen(CFG["wirepod_url"].rstrip("/") + "/session-certs/" + esn, timeout=10) as r:
+                pem = r.read().decode("ascii", "replace")
+            first = re.search(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", pem, re.S)
+            expected = ssl.PEM_cert_to_DER_cert(first.group(0))
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            raw = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            raw.settimeout(15)
+            raw.connect(path)
+            with ctx.wrap_socket(raw) as t:
+                got = t.getpeercert(binary_form=True)
+        except (OSError, ValueError, AttributeError, urllib.error.URLError, ssl.SSLError) as e:
+            log.warning("relay %s: couldn't verify (%s)", esn, e)
+            return False
+        if got != expected:
+            log.warning("relay %s: the robot's certificate doesn't match wire-pod's; not using this link", esn)
+            return False
+        return True
+
+    def open_link(self, esn, path, ino):
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            srv.bind(("127.0.0.1", relay_port(esn)))
+            srv.listen(16)
+        except OSError as e:
+            log.error("relay %s: can't listen on port %d (%s)", esn, relay_port(esn), e)
+            srv.close()
+            return
+        self.active[esn] = (ino, srv)
+        threading.Thread(target=self._accept, args=(srv, path), daemon=True).start()
+        with open(os.path.join(CFG["relay_ok_dir"], esn), "w") as f:
+            f.write("127.0.0.1:%d\n" % relay_port(esn))
+        log.info("relay %s: robot connected, reachable on 127.0.0.1:%d", esn, relay_port(esn))
+
+    def close_link(self, esn):
+        entry = self.active.pop(esn, None)
+        if entry:
+            entry[1].close()
+            log.info("relay %s: link closed", esn)
+        self._unmark(esn)
+
+    def _unmark(self, esn):
+        try:
+            os.remove(os.path.join(CFG["relay_ok_dir"], esn))
+        except OSError:
+            pass
+
+    @staticmethod
+    def _accept(srv, path):
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return  # stopped
+            try:
+                up = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                up.connect(path)
+            except OSError:
+                conn.close()
+                continue
+            for a, b in ((conn, up), (up, conn)):
+                threading.Thread(target=Relay._pump, args=(a, b), daemon=True).start()
+
+    @staticmethod
+    def _pump(src, dst):
+        try:
+            while True:
+                data = src.recv(65536)
+                if not data:
+                    break
+                dst.sendall(data)
+        except OSError:
+            pass
+        for sock in (src, dst):
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
 
 def public_user(user):
@@ -485,9 +627,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.sdk_settings(serial)
         # Everything else (Drive, camera, Talk, eye colors, quick actions) makes wire-pod connect to the robot
         # itself, which only works when the robot is on the server's own network.
-        if not robot_is_local(serial):
-            return self.send_json(409, error("robot_not_local",
-                                             "This feature only works when your Vector is on the same network as the server."))
+        if not robot_reachable(serial):
+            return self.send_json(409, error("robot_not_reachable",
+                                             "Can't reach your Vector right now. Make sure he's on and running VictorOS 3.0.2.41d or newer."))
         return self.pass_through(method, body)
 
     def sdk_settings(self, serial):
@@ -691,6 +833,8 @@ def main():
         plain = ThreadingHTTPServer((CFG["host"], int(CFG["ota_http_port"])), OtaOnlyHandler)
         threading.Thread(target=plain.serve_forever, daemon=True).start()
         log.info("OS updates also over plain HTTP on port %s", CFG["ota_http_port"])
+    if CFG.get("relay_dir"):
+        Relay().start()
     log.info("VTCS (Vector Tech Community Server) on https://%s:%s (wire-pod: %s)", CFG["host"], CFG["port"], CFG["wirepod_url"])
     try:
         server.serve_forever()

@@ -6,6 +6,7 @@
 #   bash deploy.sh build-wirepod     build a patched wire-pod in ~/wire-pod-build (the running one isn't touched)
 #   bash deploy.sh install-wirepod   swap it in for /usr/bin/wire-pod; puts the old one back if it doesn't start
 #   bash deploy.sh rollback-wirepod  put the original /usr/bin/wire-pod back
+#   bash deploy.sh relay             set up the VTCS relay (sshd on port 2222) for robots on other networks
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -35,6 +36,27 @@ server() {
 	systemctl is-active vpp-server
 	curl -sk https://127.0.0.1:8443/v1; echo
 	echo "Done. Robots get claimed the next time their owner's app connects to them."
+}
+
+relay() {
+	say "VTCS relay: robots on other networks keep a link to this server (port 2222) so the extras reach them"
+	[ -f "$HERE/relay/ssh_host_ed25519_key" ] || { echo "Missing $HERE/relay/ssh_host_ed25519_key (copy the relay folder over)."; exit 1; }
+	id vtcs-relay >/dev/null 2>&1 || sudo useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin vtcs-relay
+	# No password, but not "locked" either: sshd refuses locked accounts outright. Keys are the only way in.
+	sudo usermod -p '*' vtcs-relay
+	sudo install -d -m 755 /etc/vtcs-relay
+	sudo install -m 600 "$HERE/relay/ssh_host_ed25519_key" /etc/vtcs-relay/ssh_host_ed25519_key
+	sudo install -m 644 -t /etc/vtcs-relay "$HERE/relay/ssh_host_ed25519_key.pub" "$HERE/relay/authorized_keys" "$HERE/relay/sshd_config"
+	# Robot links land in /run/vtcs-relay (written by sshd as vtcs-relay); vpp-server marks verified ones in /run/vtcs-relay-ok.
+	printf 'd /run/vtcs-relay 0755 vtcs-relay vtcs-relay -\nd /run/vtcs-relay-ok 0755 %s %s -\n' "$ME" "$ME" | sudo tee /etc/tmpfiles.d/vtcs-relay.conf >/dev/null
+	sudo systemd-tmpfiles --create /etc/tmpfiles.d/vtcs-relay.conf
+	sudo install -m 644 "$HERE/relay/vtcs-relay-sshd.service" /etc/systemd/system/vtcs-relay-sshd.service
+	sudo systemctl daemon-reload
+	sudo systemctl enable vtcs-relay-sshd >/dev/null
+	sudo systemctl restart vtcs-relay-sshd
+	sleep 2
+	systemctl is-active vtcs-relay-sshd
+	echo "Done. Forward TCP port 2222 on the router to this machine."
 }
 
 build_wirepod() {
@@ -139,5 +161,6 @@ case "${1:-}" in
 	build-wirepod) build_wirepod ;;
 	install-wirepod) install_wirepod ;;
 	rollback-wirepod) rollback_wirepod ;;
-	*) sed -n '2,9p' "$0"; exit 1 ;;
+	relay) relay ;;
+	*) sed -n '2,10p' "$0"; exit 1 ;;
 esac

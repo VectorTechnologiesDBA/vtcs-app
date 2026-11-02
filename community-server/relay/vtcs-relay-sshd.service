@@ -1,0 +1,13 @@
+[Unit]
+Description=VTCS relay (sshd on port 2222 for robots holding a link to this server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStartPre=/usr/bin/install -d -m 0755 -o root -g root /run/sshd
+ExecStartPre=/usr/sbin/sshd -t -f /etc/vtcs-relay/sshd_config
+ExecStart=/usr/sbin/sshd -D -f /etc/vtcs-relay/sshd_config
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

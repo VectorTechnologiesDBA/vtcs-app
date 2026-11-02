@@ -1,0 +1,30 @@
+# VTCS relay: a separate sshd only for robots holding a link open to this server, so it can reach their control
+# API (vic-gateway) wherever they are. Robots may only open Unix sockets back to themselves; nothing else.
+Port 2222
+HostKey /etc/vtcs-relay/ssh_host_ed25519_key
+PidFile /run/vtcs-relay-sshd.pid
+AllowUsers vtcs-relay
+AuthorizedKeysFile /etc/vtcs-relay/authorized_keys
+AuthenticationMethods publickey
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+UsePAM no
+# Remote forwarding must be on for the robots' Unix-socket links, but no TCP ports may be opened either way.
+AllowTcpForwarding remote
+PermitListen none
+PermitOpen none
+AllowStreamLocalForwarding remote
+StreamLocalBindUnlink yes
+StreamLocalBindMask 0111
+AllowAgentForwarding no
+X11Forwarding no
+PermitTTY no
+PermitTunnel no
+GatewayPorts no
+ForceCommand /bin/false
+ClientAliveInterval 30
+ClientAliveCountMax 3
+MaxStartups 50:30:200
+LogLevel INFO

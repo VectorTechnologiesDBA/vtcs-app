@@ -5,6 +5,7 @@ Makes wire-pod use each robot's own weather and knowledge graph settings (vars.W
 see perbot.go) instead of the global ones, where a robot has them."""
 
 import os
+import re
 import shutil
 import sys
 
@@ -47,6 +48,7 @@ def in_func(rel, func_sig, old, new, count):
 
 shutil.copy(os.path.join(HERE, "perbot.go"), os.path.join(ROOT, "vars", "perbot.go"))
 shutil.copy(os.path.join(HERE, "realpeer.go"), os.path.join(ROOT, "vars", "realpeer.go"))
+shutil.copy(os.path.join(HERE, "relay.go"), os.path.join(ROOT, "vars", "relay.go"))
 shutil.copy(os.path.join(HERE, "houndify_perbot.go"), os.path.join(ROOT, "wirepod", "preqs", "houndify_perbot.go"))
 # The Linux package's entry point (data in /etc/wire-pod/wire-pod, settings from /etc/wire-pod/config.ini).
 os.makedirs(os.path.join(sys.argv[1], "chipper", "cmd", "packaged"), exist_ok=True)
@@ -143,6 +145,18 @@ edit("servers/jdocs/botInfoStorer.go", [("p, _ := peer.FromContext(ctx)", "p, _ 
 edit("servers/chipper/connectioncheck.go", [
     ("\t\t\tif frames >= framesPerRequest {", "\t\t\tif frames >= framesPerRequest || frames >= 5 {", 1),
 ])
+# Robots on other networks are reached through the VTCS relay (relay.go) instead of their (unreachable) home IP.
+for rel, prefix in (("vars/vars.go", ""), ("wirepod/ttr/intentparam.go", "vars."), ("wirepod/ttr/kgsim.go", "vars."),
+                    ("wirepod/ttr/matchIntentSend.go", "vars."), ("wirepod/sdkapp/robot.go", "vars.")):
+    path = os.path.join(ROOT, rel)
+    with open(path, encoding="utf-8") as f:
+        src = f.read()
+    new, n = re.subn(r'\b(bot|robot)\.IPAddress \+ ":443"', prefix + r"RobotTarget(\1.Esn, \1.IPAddress)", src)
+    if n == 0:
+        sys.exit("%s: no robot address to route through the relay (wire-pod version differs?)" % rel)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(new)
+    print("patched", rel, "(%d robot addresses)" % n)
 # Weather location: the one the owner set on the community server (per-bot file) wins over the robot's own setting.
 edit("wirepod/ttr/intentparam.go", [
     ("\t\t\tbotLocation = robotSettings.DefaultLocation\n",

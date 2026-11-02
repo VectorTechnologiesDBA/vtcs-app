@@ -22,3 +22,5 @@ community-server/install-tunnel.sh
 community-server/cfw/__pycache__/
 vectortech-site/
 vtcs_setup_screen.gif
+community-server/relay/ssh_host_ed25519_key
+community-server/relay/robot_id_ed25519

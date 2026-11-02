@@ -1,0 +1,1 @@
+no-pty,no-agent-forwarding,no-X11-forwarding,no-user-rc ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOjuInKzaJmxtJLdimyDckleJrzt5ntDks5SArj7ZGXj vtcs-relay-robots
