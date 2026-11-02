@@ -36,6 +36,7 @@ Standard library only, so it runs on a Raspberry Pi with nothing to install. Set
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -247,6 +248,22 @@ def write_perbot(esn):
         os.replace(tmp, path)
     except OSError as e:
         log.error("couldn't write %s: %s", path, e)
+
+
+def robot_is_local(esn):
+    """Whether wire-pod reaches the robot at a private (home network) address. Unknown counts as local."""
+    try:
+        with urllib.request.urlopen(CFG["wirepod_url"].rstrip("/") + "/api-sdk/get_sdk_info", timeout=5) as r:
+            robots = json.loads(r.read().decode("utf-8")).get("robots") or []
+    except (urllib.error.URLError, OSError, ValueError):
+        return True
+    for r in robots:
+        if str(r.get("esn", "")).lower() == esn:
+            try:
+                return ipaddress.ip_address(str(r.get("ip_address", ""))).is_private
+            except ValueError:
+                return True
+    return True
 
 
 def public_user(user):
@@ -466,6 +483,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"status": "saved"})
         if path == "/api-sdk/get_sdk_settings":
             return self.sdk_settings(serial)
+        # Everything else (Drive, camera, Talk, eye colors, quick actions) makes wire-pod connect to the robot
+        # itself, which only works when the robot is on the server's own network.
+        if not robot_is_local(serial):
+            return self.send_json(409, error("robot_not_local",
+                                             "This feature only works when your Vector is on the same network as the server."))
         return self.pass_through(method, body)
 
     def sdk_settings(self, serial):
