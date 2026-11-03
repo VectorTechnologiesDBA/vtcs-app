@@ -108,7 +108,10 @@ func vtcsRespond(req interface{}, voiceText string, robot *vector.Vector, text s
 		vtcsSay(robot, text, finish)
 		close(done)
 		if listen {
-			time.Sleep(300 * time.Millisecond)
+			// let the engine drop SDK control first: a wake word while the SDK still holds it starts the
+			// listening lights but no voice request, and the lights stay stuck
+			time.Sleep(1500 * time.Millisecond)
+			logger.Println("VTCS update: listening for the answer")
 			robot.Conn.AppIntent(context.Background(), &vectorpb.AppIntentRequest{Intent: "vtcs_listen"})
 		}
 	}()
@@ -327,4 +330,6 @@ func vtcsSay(robot *vector.Vector, text string, granted func()) {
 	robot.Conn.SayText(ctx, &vectorpb.SayTextRequest{Text: text, UseVectorVoice: true, DurationScalar: 1.0})
 	r.Send(&vectorpb.BehaviorControlRequest{RequestType: &vectorpb.BehaviorControlRequest_ControlRelease{
 		ControlRelease: &vectorpb.ControlRelease{}}})
+	r.CloseSend()
+	time.Sleep(500 * time.Millisecond)
 }
