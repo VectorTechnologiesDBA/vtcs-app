@@ -51,9 +51,8 @@ func VTCSUpdateIntent(req interface{}, voiceText string, esn string) bool {
 	status := strings.Contains(t, " check update ") || strings.Contains(t, " update status ") ||
 		strings.Contains(t, " update progress ") || strings.Contains(t, " how's the update ") ||
 		strings.Contains(t, " how is the update ")
-	check := !status && (strings.Contains(t, " check for update") || strings.Contains(t, " check for new update") ||
-		strings.Contains(t, " check updates ") || strings.Contains(t, " any updates ") ||
-		strings.Contains(t, " look for update"))
+	// Anything else about updates ("check for updates", "any updates", just "updates") checks for a new one.
+	check := !status && strings.Contains(t, " update")
 	if !status && !check {
 		return false
 	}
