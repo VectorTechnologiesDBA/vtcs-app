@@ -4,7 +4,7 @@ package wirepod_ttr
 //
 //	"check for updates"  -> "No new update is out." or "Version X came out N days ago. Do you want to hear the
 //	                        release notes, update, or both?" (then Vector listens for the answer)
-//	"check update"       -> the progress of an update that's downloading or installing, or "No update is in progress."
+//	"check update status" -> the progress of an update that's downloading or installing, or "No update is in progress."
 //
 // The latest release comes from the community server (/vic/latest.json); the robot's own version and update
 // progress come from the robot over its SDK connection.
@@ -47,10 +47,11 @@ var (
 	vtcsVersion = regexp.MustCompile(`\d+\.\d+\.\d+\.\d+[a-z]?`)
 )
 
-// VTCSUpdateIntent handles "check for updates" and "check update". True if it handled the request.
+// VTCSUpdateIntent handles "check for updates" and "check update status". True if it handled the request.
 func VTCSUpdateIntent(req interface{}, voiceText string, esn string) bool {
 	t := " " + strings.Join(strings.Fields(strings.ToLower(strings.Trim(voiceText, " .?!"))), " ") + " "
-	status := strings.Contains(t, " check update ") || strings.Contains(t, " update status ") ||
+	// "check update status" (or "update status", "update progress") asks how a running update is going.
+	status := strings.Contains(t, " update status ") ||
 		strings.Contains(t, " update progress ") || strings.Contains(t, " how's the update ") ||
 		strings.Contains(t, " how is the update ")
 	// Anything else about updates ("check for updates", "any updates", just "updates") checks for a new one.
@@ -142,7 +143,7 @@ func VTCSUpdateAnswer(esn string, answer string) string {
 			logger.Println("VTCS update: couldn't start the update on " + esn + ": " + err.Error())
 			parts = append(parts, "I couldn't start the update. Try again from the Vector app.")
 		} else {
-			parts = append(parts, "Okay, I'm downloading the update now. Say check update to hear how it's going.")
+			parts = append(parts, "Okay, I'm downloading the update now. Say check update status to hear how it's going.")
 		}
 	}
 	return strings.Join(parts, " ")
