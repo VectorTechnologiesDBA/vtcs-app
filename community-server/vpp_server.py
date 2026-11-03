@@ -276,6 +276,11 @@ def robot_reachable(esn):
 _ota_versions = {}
 
 
+def version_key(version):
+    """Comparable form of a VictorOS version like 3.0.2.42d (numbers compared as numbers)."""
+    return [int(x) if x.isdigit() else x for x in re.findall(r"\d+|[a-z]+", version.lower())]
+
+
 def ota_version(path):
     """The update_version in an OTA file's manifest.ini (cached by modification time), or "" if unreadable."""
     try:
@@ -485,6 +490,12 @@ class OtaOnlyHandler(BaseHTTPRequestHandler):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "VTCS/1.0"
+
+    def log_request(self, code="-", size="-"):
+        # Not-found requests are almost all internet scanners probing for routers and admin pages: keep them out of the log.
+        if str(code) == "404":
+            return
+        super().log_request(code, size)
 
     def log_message(self, fmt, *args):
         log.info("%s %s", self.client_address[0], fmt % args)
@@ -763,7 +774,7 @@ class Handler(BaseHTTPRequestHandler):
         so interrupted downloads can resume.
 
         A robot checking for updates asks for {full,diff}/<its own version>.ota: if there's no such file it gets
-        full/latest.ota when that's a different version, or 403 (what the robot reads as "no update") when it's
+        full/latest.ota when that's newer, or 403 (what the robot reads as "no update") when it's
         already on it."""
         rel = path[len("/vic/"):]
         if not OTA_PATH.match(rel):
@@ -776,7 +787,7 @@ class Handler(BaseHTTPRequestHandler):
             latest = os.path.join(root, "full", "latest.ota")
             asked = rel.split("/", 1)[1][:-len(".ota")]
             newest = ota_version(latest)
-            if not newest or asked == newest:
+            if not newest or version_key(asked) >= version_key(newest):
                 return self.send_json(403, error("no_update", "No update available."))
             full = latest
         size = os.path.getsize(full)
