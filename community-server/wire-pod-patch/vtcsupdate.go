@@ -79,9 +79,10 @@ func VTCSUpdateIntent(req interface{}, voiceText string, esn string) bool {
 		vtcsMu.Unlock()
 	}
 	// Take behavior control first, then end the voice request: the robot's own reaction to the request (the
-	// "no audio" animation) is overridden, so he goes straight to saying the answer.
+	// reaction) is overridden, so he goes straight to saying the answer. intent_vtcs_silent is mapped (VictorOS) to
+	// a user intent nothing handles, so nothing plays after either.
 	var once sync.Once
-	finish := func() { once.Do(func() { IntentPass(req, "intent_system_noaudio", voiceText, map[string]string{}, false) }) }
+	finish := func() { once.Do(func() { IntentPass(req, "intent_vtcs_silent", voiceText, map[string]string{}, false) }) }
 	done := make(chan struct{})
 	go func() {
 		vtcsSay(robot, text, finish)
