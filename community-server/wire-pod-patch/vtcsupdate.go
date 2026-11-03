@@ -47,8 +47,19 @@ var (
 	vtcsVersion = regexp.MustCompile(`\d+\.\d+\.\d+\.\d+[a-z]?`)
 )
 
-// VTCSUpdateIntent handles "check for updates" and "check update status". True if it handled the request.
+// VTCSUpdateIntent handles "check for updates", "check update status", and the answer to "release notes, update,
+// or both?". True if it handled the request.
 func VTCSUpdateIntent(req interface{}, voiceText string, esn string) bool {
+	if VTCSUpdateAwaitingAnswer(esn) {
+		logger.Println("Bot " + esn + " VTCS update answer: " + voiceText)
+		robot, err := vtcsRobot(esn)
+		if err != nil {
+			IntentPass(req, "intent_system_noaudio", voiceText, map[string]string{}, false)
+			return true
+		}
+		vtcsRespond(req, voiceText, robot, VTCSUpdateAnswer(esn, voiceText), false)
+		return true
+	}
 	t := " " + strings.Join(strings.Fields(strings.ToLower(strings.Trim(voiceText, " .?!"))), " ") + " "
 	// "check update status" asks how a running update is going. Vosk often mishears it ("the cockpit status",
 	// "jack up the status"), so any phrase ending in "status" or "progress" counts.
@@ -80,18 +91,25 @@ func VTCSUpdateIntent(req interface{}, voiceText string, esn string) bool {
 		vtcsPending[esn] = vtcsQuestion{asked: time.Now(), release: rel}
 		vtcsMu.Unlock()
 	}
-	// Take behavior control first, then end the voice request: the robot's own reaction to the request (the
-	// reaction) is overridden, so he goes straight to saying the answer. intent_vtcs_silent is mapped (VictorOS) to
-	// a user intent nothing handles, so nothing plays after either.
+	vtcsRespond(req, voiceText, robot, text, ask)
+	return true
+}
+
+// vtcsRespond ends the voice request and has Vector say text; with listen, he then listens for a reply.
+//
+// Behavior control is taken first, then the request is ended with intent_vtcs_silent (mapped in VictorOS to a user
+// intent nothing handles), so no animation plays before or after he speaks. The reply is heard the same way as
+// "Hey Vector" (VictorOS's vtcs_listen app intent) and comes back here as a normal voice request.
+func vtcsRespond(req interface{}, voiceText string, robot *vector.Vector, text string, listen bool) {
 	var once sync.Once
 	finish := func() { once.Do(func() { IntentPass(req, "intent_vtcs_silent", voiceText, map[string]string{}, false) }) }
 	done := make(chan struct{})
 	go func() {
 		vtcsSay(robot, text, finish)
 		close(done)
-		if ask {
-			// Listen for the answer (with the listening animation); it comes back as a knowledge graph request.
-			DoNewRequest(robot)
+		if listen {
+			time.Sleep(300 * time.Millisecond)
+			robot.Conn.AppIntent(context.Background(), &vectorpb.AppIntentRequest{Intent: "vtcs_listen"})
 		}
 	}()
 	select {
@@ -99,7 +117,6 @@ func VTCSUpdateIntent(req interface{}, voiceText string, esn string) bool {
 	case <-done:
 	}
 	finish()
-	return true
 }
 
 // VTCSUpdateAwaitingAnswer: Vector just asked "release notes, update, or both?" and is listening for the answer.
