@@ -25,6 +25,7 @@ import (
 	"github.com/fforchino/vector-go-sdk/pkg/vectorpb"
 	"github.com/kercre123/wire-pod/chipper/pkg/logger"
 	"github.com/kercre123/wire-pod/chipper/pkg/vars"
+	"github.com/kercre123/wire-pod/chipper/pkg/vtt"
 )
 
 // The community server on this machine (its certificate is for server.vectortech.dev, not 127.0.0.1).
@@ -59,24 +60,42 @@ func VTCSUpdateIntent(req interface{}, voiceText string, esn string) bool {
 		return false
 	}
 	logger.Println("Bot " + esn + " VTCS update command: " + voiceText)
+	robot, err := vtcsRobot(esn)
+	if err != nil {
+		logger.Println("VTCS update: can't reach " + esn + ": " + err.Error())
+		IntentPass(req, "intent_system_noaudio", voiceText, map[string]string{}, false)
+		return true
+	}
+	var text string
+	var ask bool
+	var rel vtcsRelease
+	if status {
+		text = vtcsStatusText(robot)
+	} else {
+		text, ask, rel = vtcsCheckText(robot)
+	}
+	if ask {
+		vtcsMu.Lock()
+		vtcsPending[esn] = vtcsQuestion{asked: time.Now(), release: rel}
+		vtcsMu.Unlock()
+	}
+	if igr, ok := req.(*vtt.IntentGraphRequest); ok {
+		// Answered like a knowledge graph question: Vector just says it, with no other animation first.
+		KnowledgeGraphResponseIG(igr, text, voiceText)
+		if ask {
+			go func() {
+				// Once he's done asking, listen for the answer (with the listening animation); it comes back as a
+				// knowledge graph request (VTCSUpdateAnswer).
+				time.Sleep(3*time.Second + time.Duration(len(text))*70*time.Millisecond)
+				DoNewRequest(robot)
+			}()
+		}
+		return true
+	}
 	IntentPass(req, "intent_system_noaudio", voiceText, map[string]string{}, false)
 	go func() {
-		robot, err := vtcsRobot(esn)
-		if err != nil {
-			logger.Println("VTCS update: can't reach " + esn + ": " + err.Error())
-			return
-		}
-		if status {
-			vtcsSay(robot, vtcsStatusText(robot))
-			return
-		}
-		text, ask, rel := vtcsCheckText(robot)
 		vtcsSay(robot, text)
 		if ask {
-			vtcsMu.Lock()
-			vtcsPending[esn] = vtcsQuestion{asked: time.Now(), release: rel}
-			vtcsMu.Unlock()
-			// Listen for the answer (the robot plays its listening animation); it arrives as a knowledge graph request.
 			DoNewRequest(robot)
 		}
 	}()
