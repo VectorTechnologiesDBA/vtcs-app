@@ -25,7 +25,6 @@ import (
 	"github.com/fforchino/vector-go-sdk/pkg/vectorpb"
 	"github.com/kercre123/wire-pod/chipper/pkg/logger"
 	"github.com/kercre123/wire-pod/chipper/pkg/vars"
-	"github.com/kercre123/wire-pod/chipper/pkg/vtt"
 )
 
 // The community server on this machine (its certificate is for server.vectortech.dev, not 127.0.0.1).
@@ -79,26 +78,24 @@ func VTCSUpdateIntent(req interface{}, voiceText string, esn string) bool {
 		vtcsPending[esn] = vtcsQuestion{asked: time.Now(), release: rel}
 		vtcsMu.Unlock()
 	}
-	if igr, ok := req.(*vtt.IntentGraphRequest); ok {
-		// Answered like a knowledge graph question: Vector just says it, with no other animation first.
-		KnowledgeGraphResponseIG(igr, text, voiceText)
-		if ask {
-			go func() {
-				// Once he's done asking, listen for the answer (with the listening animation); it comes back as a
-				// knowledge graph request (VTCSUpdateAnswer).
-				time.Sleep(3*time.Second + time.Duration(len(text))*70*time.Millisecond)
-				DoNewRequest(robot)
-			}()
-		}
-		return true
-	}
-	IntentPass(req, "intent_system_noaudio", voiceText, map[string]string{}, false)
+	// Take behavior control first, then end the voice request: the robot's own reaction to the request (the
+	// "no audio" animation) is overridden, so he goes straight to saying the answer.
+	var once sync.Once
+	finish := func() { once.Do(func() { IntentPass(req, "intent_system_noaudio", voiceText, map[string]string{}, false) }) }
+	done := make(chan struct{})
 	go func() {
-		vtcsSay(robot, text)
+		vtcsSay(robot, text, finish)
+		close(done)
 		if ask {
+			// Listen for the answer (with the listening animation); it comes back as a knowledge graph request.
 			DoNewRequest(robot)
 		}
 	}()
+	select {
+	case <-time.After(3 * time.Second):
+	case <-done:
+	}
+	finish()
 	return true
 }
 
@@ -278,8 +275,9 @@ func vtcsRobot(esn string) (*vector.Vector, error) {
 	return nil, fmt.Errorf("robot not known to wire-pod")
 }
 
-// vtcsSay takes behavior control, says the text in Vector's voice with his talking animations, and lets go.
-func vtcsSay(robot *vector.Vector, text string) {
+// vtcsSay takes behavior control, calls granted (if any), says the text in Vector's voice with his talking
+// animations, and lets go.
+func vtcsSay(robot *vector.Vector, text string, granted func()) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	r, err := robot.Conn.BehaviorControl(ctx)
@@ -299,6 +297,10 @@ func vtcsSay(robot *vector.Vector, text string) {
 		if resp.GetControlGrantedResponse() != nil {
 			break
 		}
+	}
+	if granted != nil {
+		granted()
+		time.Sleep(300 * time.Millisecond)
 	}
 	robot.Conn.PlayAnimation(ctx, &vectorpb.PlayAnimationRequest{
 		Animation: &vectorpb.Animation{Name: "anim_getin_tts_01"}, Loops: 1})
