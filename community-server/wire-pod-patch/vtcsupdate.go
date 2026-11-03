@@ -50,9 +50,10 @@ var (
 // VTCSUpdateIntent handles "check for updates" and "check update status". True if it handled the request.
 func VTCSUpdateIntent(req interface{}, voiceText string, esn string) bool {
 	t := " " + strings.Join(strings.Fields(strings.ToLower(strings.Trim(voiceText, " .?!"))), " ") + " "
-	// "check update status" (or "update status", "update progress") asks how a running update is going.
-	status := strings.Contains(t, " update status ") ||
-		strings.Contains(t, " update progress ") || strings.Contains(t, " how's the update ") ||
+	// "check update status" asks how a running update is going. Vosk often mishears it ("the cockpit status",
+	// "jack up the status"), so any phrase ending in "status" or "progress" counts.
+	status := strings.HasSuffix(t, " status ") || strings.HasSuffix(t, " progress ") ||
+		strings.Contains(t, " update status ") || strings.Contains(t, " how's the update ") ||
 		strings.Contains(t, " how is the update ")
 	// Anything else about updates ("check for updates", "any updates", just "updates") checks for a new one.
 	check := !status && strings.Contains(t, " update")
