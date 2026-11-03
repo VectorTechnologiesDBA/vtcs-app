@@ -50,6 +50,7 @@ shutil.copy(os.path.join(HERE, "perbot.go"), os.path.join(ROOT, "vars", "perbot.
 shutil.copy(os.path.join(HERE, "realpeer.go"), os.path.join(ROOT, "vars", "realpeer.go"))
 shutil.copy(os.path.join(HERE, "relay.go"), os.path.join(ROOT, "vars", "relay.go"))
 shutil.copy(os.path.join(HERE, "houndify_perbot.go"), os.path.join(ROOT, "wirepod", "preqs", "houndify_perbot.go"))
+shutil.copy(os.path.join(HERE, "vtcsupdate.go"), os.path.join(ROOT, "wirepod", "ttr", "vtcsupdate.go"))
 # The Linux package's entry point (data in /etc/wire-pod/wire-pod, settings from /etc/wire-pod/config.ini).
 os.makedirs(os.path.join(sys.argv[1], "chipper", "cmd", "packaged"), exist_ok=True)
 shutil.copy(os.path.join(HERE, "packaged_main.go"), os.path.join(sys.argv[1], "chipper", "cmd", "packaged", "main.go"))
@@ -164,3 +165,22 @@ edit("wirepod/ttr/intentparam.go", [
      "\t\t\tif l := vars.LocationFor(botSerial); l != \"\" {\n\t\t\t\tbotLocation = l\n\t\t\t}\n", 2),
 ])
 print("done")
+
+# "Check for updates" / "check update" (vtcsupdate.go): handled before any other intent matching, and the answer to
+# "release notes, update, or both?" comes back as the knowledge graph request Vector listens with.
+edit("wirepod/ttr/matchIntentSend.go", [
+    ("\tvoiceText = strings.ToLower(voiceText)\n\tpluginMatched := pluginFunctionHandler(req, voiceText, botSerial)",
+     "\tvoiceText = strings.ToLower(voiceText)\n\tif VTCSUpdateIntent(req, voiceText, botSerial) {\n\t\treturn true\n\t}\n"
+     "\tpluginMatched := pluginFunctionHandler(req, voiceText, botSerial)", 1),
+])
+edit("wirepod/preqs/knowledgegraph.go", [
+    ("\tInitKnowledge()\n\tspeechReq := sr.ReqToSpeechRequest(req)\n",
+     "\tInitKnowledge()\n\tspeechReq := sr.ReqToSpeechRequest(req)\n"
+     "\tif ttr.VTCSUpdateAwaitingAnswer(req.Device) {\n"
+     "\t\tanswer, _ := sttHandler(speechReq)\n"
+     "\t\tkg := pb.KnowledgeGraphResponse{Session: req.Session, DeviceId: req.Device, CommandType: NoResult,\n"
+     "\t\t\tSpokenText: ttr.VTCSUpdateAnswer(req.Device, answer)}\n"
+     "\t\treq.Stream.Send(&kg)\n"
+     "\t\treturn nil, nil\n"
+     "\t}\n", 1),
+])

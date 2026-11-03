@@ -281,6 +281,36 @@ def version_key(version):
     return [int(x) if x.isdigit() else x for x in re.findall(r"\d+|[a-z]+", version.lower())]
 
 
+_releases = {}
+
+
+def release_info(version):
+    """When the VictorOS GitHub release for this version came out and its notes (cached for an hour)."""
+    cached = _releases.get(version)
+    if cached and time.time() - cached[0] < 3600:
+        return dict(cached[1])
+    info = {}
+    try:
+        req = urllib.request.Request("https://api.github.com/repos/VectorTechnologiesDBA/VictorOS/releases/tags/v"
+                                     + version, headers={"Accept": "application/vnd.github+json",
+                                                         "User-Agent": "VTCS"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            rel = json.load(r)
+        published = rel.get("published_at") or ""
+        if published:
+            info["released"] = int(datetime.strptime(published, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc).timestamp())
+        # Spoken by the robot: drop markdown (headings, bullets, bold, links) and bare URLs.
+        notes = re.sub(r"\[([^\]]*)\]\([^)]*\)", lambda m: m.group(1), rel.get("body") or "")
+        notes = re.sub(r"(?m)^\s*(#+|[-*])\s*", "", notes)
+        notes = re.sub(r"https?://\S+", "", notes.replace("**", "").replace("`", "").replace("→", "to"))
+        info["notes"] = " ".join(l.strip().rstrip(".") + "." for l in notes.splitlines() if l.strip())
+    except (OSError, ValueError):
+        pass
+    _releases[version] = (time.time(), info)
+    return dict(info)
+
+
 def ota_version(path):
     """The update_version in an OTA file's manifest.ini (cached by modification time), or "" if unreadable."""
     try:
@@ -780,6 +810,23 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError):
                 pass  # the app went away (e.g. left the Drive screen)
 
+    def latest_release(self):
+        """The newest VictorOS on this server, for the robot's "check for updates" voice command: its version, when it
+        was released and its release notes (ota_dir/full/latest-notes.txt, else the GitHub release's notes)."""
+        latest = os.path.join(CFG["ota_dir"], "full", "latest.ota")
+        version = ota_version(latest)
+        if not version:
+            return self.send_json(404, error("no_update", "No update on this server."))
+        info = release_info(version)
+        notes_file = os.path.join(CFG["ota_dir"], "full", "latest-notes.txt")
+        try:
+            with open(notes_file, encoding="utf-8") as f:
+                info["notes"] = f.read().strip()
+        except OSError:
+            pass
+        released = info.get("released") or int(os.path.getmtime(latest))
+        self.send_json(200, {"version": version, "released": released, "notes": info.get("notes", "")})
+
     def ota(self, path, head=False):
         """An OS update file from ota_dir (e.g. /vic/full/latest.ota -> ota_dir/full/latest.ota), with Range support
         so interrupted downloads can resume.
@@ -788,6 +835,8 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
         full/latest.ota when that's newer, or 403 (what the robot reads as "no update") when it's
         already on it."""
         rel = path[len("/vic/"):]
+        if rel == "latest.json":
+            return self.latest_release()
         if not OTA_PATH.match(rel):
             return self.send_json(404, error("not_found", "No such update."))
         root = os.path.realpath(CFG["ota_dir"])
