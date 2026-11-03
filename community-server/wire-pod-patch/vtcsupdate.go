@@ -11,6 +11,7 @@ package wirepod_ttr
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -26,7 +27,8 @@ import (
 	"github.com/kercre123/wire-pod/chipper/pkg/vars"
 )
 
-const vtcsLatestURL = "http://127.0.0.1:8088/vic/latest.json"
+// The community server on this machine (its certificate is for server.vectortech.dev, not 127.0.0.1).
+const vtcsLatestURL = "https://127.0.0.1:8443/vic/latest.json"
 
 type vtcsRelease struct {
 	Version  string `json:"version"`
@@ -175,7 +177,8 @@ func vtcsStatusText(robot *vector.Vector) string {
 
 func vtcsLatest() (vtcsRelease, error) {
 	var rel vtcsRelease
-	client := http.Client{Timeout: 10 * time.Second}
+	client := http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
 	resp, err := client.Get(vtcsLatestURL)
 	if err != nil {
 		return rel, err
