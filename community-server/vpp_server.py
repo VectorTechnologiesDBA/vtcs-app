@@ -468,7 +468,24 @@ HOP_BY_HOP = {"connection", "keep-alive", "transfer-encoding", "te", "trailer", 
               "proxy-authenticate", "authorization", "host", "content-length"}
 
 
-class OtaOnlyHandler(BaseHTTPRequestHandler):
+class QuietLog:
+    """Internet scanners hit these ports all day probing for routers and admin pages. Keep their requests (anything
+    refused, not found, malformed, or just the front page) out of the log; real traffic is still logged."""
+
+    def log_request(self, code="-", size="-"):
+        try:
+            code = int(code)
+        except (TypeError, ValueError):
+            code = 0
+        if code >= 400 or (code == 302 and self.path.split("?", 1)[0] in ("/", "/favicon.ico")):
+            return
+        super().log_request(code, size)
+
+    def log_error(self, fmt, *args):
+        pass
+
+
+class OtaOnlyHandler(QuietLog, BaseHTTPRequestHandler):
     """Plain-HTTP listener for OS updates only (ota_http_port), for robots that can't do modern HTTPS."""
     server_version = "VTCS/1.0"
 
@@ -488,14 +505,8 @@ class OtaOnlyHandler(BaseHTTPRequestHandler):
         Handler.send_json(self, 404, error("not_found", "Only /vic/ updates are served over plain HTTP."))
 
 
-class Handler(BaseHTTPRequestHandler):
+class Handler(QuietLog, BaseHTTPRequestHandler):
     server_version = "VTCS/1.0"
-
-    def log_request(self, code="-", size="-"):
-        # Not-found requests are almost all internet scanners probing for routers and admin pages: keep them out of the log.
-        if str(code) == "404":
-            return
-        super().log_request(code, size)
 
     def log_message(self, fmt, *args):
         log.info("%s %s", self.client_address[0], fmt % args)
