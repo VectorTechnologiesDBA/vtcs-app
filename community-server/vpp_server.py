@@ -557,9 +557,12 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def send_json(self, status, body):
+    def send_json(self, status, body, public=False):
         data = json.dumps(body).encode("utf-8")
         self.send_response(status)
+        if public:
+            # readable from any web page (vectortech.dev/recovery shows the latest version)
+            self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -825,7 +828,7 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
         except OSError:
             pass
         released = info.get("released") or int(os.path.getmtime(latest))
-        self.send_json(200, {"version": version, "released": released, "notes": info.get("notes", "")})
+        self.send_json(200, {"version": version, "released": released, "notes": info.get("notes", "")}, public=True)
 
     def ota(self, path, head=False):
         """An OS update file from ota_dir (e.g. /vic/full/latest.ota -> ota_dir/full/latest.ota), with Range support
