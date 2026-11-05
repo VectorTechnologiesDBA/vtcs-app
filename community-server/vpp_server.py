@@ -292,7 +292,10 @@ class Vim:
             if other is None:
                 return None, "No robot has that code. Check it in the other person's app."
             if other == esn:
-                return None, "That's your own code."
+                # your own code: a contact for yourself, so one robot can try VIM out ("text me" -> he says it)
+                me["contacts"][esn] = name or me["name"]
+                self._save()
+                return me["contacts"][esn], None
             me["contacts"][other] = name or self.robots[other]["name"]
             self.robots[other]["contacts"][esn] = me["name"]
             self._save()
