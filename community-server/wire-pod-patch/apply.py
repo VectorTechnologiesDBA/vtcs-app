@@ -51,6 +51,7 @@ shutil.copy(os.path.join(HERE, "realpeer.go"), os.path.join(ROOT, "vars", "realp
 shutil.copy(os.path.join(HERE, "relay.go"), os.path.join(ROOT, "vars", "relay.go"))
 shutil.copy(os.path.join(HERE, "houndify_perbot.go"), os.path.join(ROOT, "wirepod", "preqs", "houndify_perbot.go"))
 shutil.copy(os.path.join(HERE, "vtcsupdate.go"), os.path.join(ROOT, "wirepod", "ttr", "vtcsupdate.go"))
+shutil.copy(os.path.join(HERE, "vtcsvim.go"), os.path.join(ROOT, "wirepod", "ttr", "vtcsvim.go"))
 # The Linux package's entry point (data in /etc/wire-pod/wire-pod, settings from /etc/wire-pod/config.ini).
 os.makedirs(os.path.join(sys.argv[1], "chipper", "cmd", "packaged"), exist_ok=True)
 shutil.copy(os.path.join(HERE, "packaged_main.go"), os.path.join(sys.argv[1], "chipper", "cmd", "packaged", "main.go"))
@@ -166,11 +167,13 @@ edit("wirepod/ttr/intentparam.go", [
 ])
 print("done")
 
-# "Check for updates" / "check update" (vtcsupdate.go): handled before any other intent matching, and the answer to
+# VIM, "text Bob" (vtcsvim.go), then "check for updates" / "check update" (vtcsupdate.go): handled before any other
+# intent matching (VIM first, so a message that mentions an update gets sent). The answer to
 # "release notes, update, or both?" comes back as the knowledge graph request Vector listens with.
 edit("wirepod/ttr/matchIntentSend.go", [
     ("\tvoiceText = strings.ToLower(voiceText)\n\tpluginMatched := pluginFunctionHandler(req, voiceText, botSerial)",
-     "\tvoiceText = strings.ToLower(voiceText)\n\tif VTCSUpdateIntent(req, voiceText, botSerial) {\n\t\treturn true\n\t}\n"
+     "\tvoiceText = strings.ToLower(voiceText)\n\tif VTCSVimIntent(req, voiceText, botSerial) {\n\t\treturn true\n\t}\n"
+     "\tif VTCSUpdateIntent(req, voiceText, botSerial) {\n\t\treturn true\n\t}\n"
      "\tpluginMatched := pluginFunctionHandler(req, voiceText, botSerial)", 1),
 ])
 edit("wirepod/preqs/knowledgegraph.go", [

@@ -72,6 +72,9 @@ DEFAULTS = {
     "relay_ok_dir": "/run/vtcs-relay-ok",
     "portal_url": "https://vectortech.dev/account.html",
     "site_origins": ["https://vectortech.dev", "https://www.vectortech.dev"],
+    # VIM (Vector Instant Messaging): plain HTTP on 127.0.0.1 only, for wire-pod on this machine. 0 turns VIM's
+    # robot side off.
+    "vim_port": 8089,
 }
 
 log = logging.getLogger("vpp")
@@ -225,6 +228,128 @@ class Store:
 
 
 STORE = Store(CFG["data_dir"])
+
+
+class Vim:
+    """VIM, Vector Instant Messaging, in data/vim.json.
+
+    Every robot has an add code. Entering someone's code in the app makes the two robots contacts of each other,
+    each under the name its owner gives the other. A message to a contact (said to Vector, "text Bob", or typed in
+    the app) waits in the queue until wire-pod announces it on the other robot (VimInternal: /vim/pending)."""
+
+    ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L
+    MAX_TEXT = 300
+    MAX_QUEUED = 20  # per recipient
+
+    def __init__(self, data_dir):
+        self.path = os.path.join(data_dir, "vim.json")
+        self.lock = threading.Lock()
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            d = {}
+        self.robots = d.get("robots") or {}  # esn -> {code, name, contacts: {esn: name}}
+        self.queue = d.get("queue") or []    # [{id, to, from, text, sent}]
+
+    def _save(self):
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"robots": self.robots, "queue": self.queue}, f, indent=2)
+        os.replace(tmp, self.path)
+
+    def _robot(self, esn):
+        """The robot's record, made (with a new code) the first time. Call with the lock held."""
+        r = self.robots.get(esn)
+        if r is None:
+            codes = {x["code"] for x in self.robots.values()}
+            code = ""
+            while not code or code in codes:
+                code = "".join(secrets.choice(self.ALPHABET) for _ in range(6))
+            owner = STORE.owner_of(esn)
+            email = next((u["email"] for u in STORE.users.values() if u["user_id"] == owner), "")
+            r = self.robots[esn] = {"code": code, "name": email.split("@")[0][:30] or "Vector", "contacts": {}}
+            self._save()
+        return r
+
+    def info(self, esn):
+        with self.lock:
+            r = self._robot(esn)
+            return {"esn": esn, "code": r["code"], "name": r["name"],
+                    "contacts": [{"esn": e, "name": n} for e, n in sorted(r["contacts"].items(), key=lambda x: x[1].lower())]}
+
+    def set_name(self, esn, name):
+        with self.lock:
+            self._robot(esn)["name"] = name
+            self._save()
+
+    def add(self, esn, code, name):
+        """Make esn and the robot with that code contacts of each other. (its name, None) or (None, why not)."""
+        code = code.strip().upper().replace(" ", "").replace("-", "")
+        with self.lock:
+            me = self._robot(esn)
+            other = next((e for e, r in self.robots.items() if r["code"] == code), None)
+            if other is None:
+                return None, "No robot has that code. Check it in the other person's app."
+            if other == esn:
+                return None, "That's your own code."
+            me["contacts"][other] = name or self.robots[other]["name"]
+            self.robots[other]["contacts"][esn] = me["name"]
+            self._save()
+            return me["contacts"][other], None
+
+    def remove(self, esn, other):
+        with self.lock:
+            self._robot(esn)["contacts"].pop(other, None)
+            if other in self.robots:
+                self.robots[other]["contacts"].pop(esn, None)
+            self._save()
+
+    def rename(self, esn, other, name):
+        with self.lock:
+            contacts = self._robot(esn)["contacts"]
+            if other not in contacts:
+                return False
+            contacts[other] = name
+            self._save()
+            return True
+
+    def send(self, esn, to, text):
+        """Queue a message from esn to its contact to. None, or why it wasn't sent."""
+        text = " ".join(str(text).split())[:self.MAX_TEXT]
+        if not text:
+            return "The message is empty."
+        with self.lock:
+            if to not in self._robot(esn)["contacts"] or esn not in (self.robots.get(to) or {}).get("contacts", {}):
+                return "That robot isn't one of your contacts."
+            if sum(1 for m in self.queue if m["to"] == to) >= self.MAX_QUEUED:
+                return "Their robot has too many messages waiting. Try again later."
+            self.queue.append({"id": secrets.token_hex(8), "to": to, "from": esn, "text": text, "sent": int(time.time())})
+            self._save()
+        log.info("VIM message %s -> %s", esn, to)
+        return None
+
+    def pending(self):
+        """Waiting messages, with the sender's name as the recipient knows them."""
+        with self.lock:
+            return [{"id": m["id"], "to": m["to"], "from": m["from"], "text": m["text"], "sent": m["sent"],
+                     "from_name": (self.robots.get(m["to"]) or {}).get("contacts", {}).get(m["from"])
+                                  or (self.robots.get(m["from"]) or {}).get("name") or "someone"}
+                    for m in self.queue]
+
+    def delivered(self, msg_id):
+        with self.lock:
+            before = len(self.queue)
+            self.queue = [m for m in self.queue if m["id"] != msg_id]
+            if len(self.queue) != before:
+                self._save()
+
+    def contacts(self, esn):
+        with self.lock:
+            return dict(self._robot(esn)["contacts"])
+
+
+VIM = Vim(CFG["data_dir"])
 
 
 def write_perbot(esn):
@@ -593,6 +718,8 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
             return self.portal()
         if path == "/v1/me":
             return self.me()
+        if path == "/v1/vim":
+            return self.vim("info", {"esn": (self.query().get("serial") or [""])[0]})
         if path == "/v1":
             return self.send_json(200, {"status": "ok", "server": "vtcs"})
         if path.startswith("/v1/session_cert/"):
@@ -623,6 +750,8 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
                 return self.send_json(409, error("account_exists", "An account with that email already exists."))
             log.info("created account %s", username)
             return self.send_json(200, {"user": public_user(user)})
+        if path.startswith("/v1/vim/"):
+            return self.vim(path[len("/v1/vim/"):], body)
         if path == "/v1/robots/release":
             user_id = self.user_id()
             esn = str(body.get("esn") or "").strip().lower()
@@ -653,6 +782,47 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
 
     def user_id(self):
         return STORE.user_id_for(self.token())
+
+    def vim(self, action, body):
+        """VIM from the app, for a robot on the signed-in account:
+            GET  /v1/vim?serial=<esn>                  {esn, code, name, contacts: [{esn, name}]}
+            POST /v1/vim/name    {esn, name}           the name this robot gets when someone adds its code
+            POST /v1/vim/add     {esn, code, name}     add the robot with that code, calling it name
+            POST /v1/vim/rename  {esn, contact, name}
+            POST /v1/vim/remove  {esn, contact}
+            POST /v1/vim/send    {esn, to, text}       Vector says it on the contact's robot"""
+        user_id = self.user_id()
+        if not user_id:
+            return self.send_json(401, error("not_signed_in", "Sign in to use this."))
+        esn = str(body.get("esn") or "").strip().lower()
+        if not ESN.match(esn):
+            return self.send_json(400, error("bad_serial", "Say which robot (esn)."))
+        if STORE.owner_of(esn) != user_id:
+            return self.send_json(403, error("not_your_robot", "That robot isn't set up on your account."))
+        name = " ".join(str(body.get("name") or "").split())[:30]
+        contact = str(body.get("contact") or body.get("to") or "").strip().lower()
+        if action == "name":
+            if not name:
+                return self.send_json(400, error("bad_name", "Enter a name."))
+            VIM.set_name(esn, name)
+        elif action == "add":
+            added, problem = VIM.add(esn, str(body.get("code") or ""), name)
+            if problem:
+                return self.send_json(404, error("bad_code", problem))
+            log.info("VIM: %s added %s", esn, added)
+        elif action == "rename":
+            if not name or not VIM.rename(esn, contact, name):
+                return self.send_json(400, error("bad_contact", "Unknown contact, or no name."))
+        elif action == "remove":
+            VIM.remove(esn, contact)
+        elif action == "send":
+            problem = VIM.send(esn, contact, body.get("text") or "")
+            if problem:
+                return self.send_json(400, error("not_sent", problem))
+            return self.send_json(200, {"status": "sent"})
+        elif action != "info":
+            return self.send_json(404, error("not_found", "Unknown path."))
+        return self.send_json(200, VIM.info(esn))
 
     def portal(self):
         self.send_response(302)
@@ -919,6 +1089,55 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
         self.wfile.write(cert)
 
 
+class VimInternal(QuietLog, BaseHTTPRequestHandler):
+    """VIM for wire-pod on this machine (listens on 127.0.0.1 only, no sign-in):
+        GET  /vim/contacts?esn=<esn>       {"contacts": [{esn, name}]}   who that robot can text
+        POST /vim/send {from, to, text}    a message said to Vector
+        GET  /vim/pending                  {"messages": [{id, to, from_name, text, sent}]}   to announce
+        POST /vim/delivered {id}           announced: forget it"""
+
+    def log_message(self, fmt, *args):
+        pass  # wire-pod polls /vim/pending every few seconds
+
+    def send_json(self, status, body):
+        data = json.dumps(body).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        q = urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+        if path == "/vim/contacts":
+            esn = (q.get("esn") or [""])[0].lower()
+            if not ESN.match(esn):
+                return self.send_json(400, error("bad_serial", "Say which robot (esn=)."))
+            return self.send_json(200, {"contacts": [{"esn": e, "name": n} for e, n in VIM.contacts(esn).items()]})
+        if path == "/vim/pending":
+            return self.send_json(200, {"messages": VIM.pending()})
+        return self.send_json(404, error("not_found", "Unknown path."))
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8")) if 0 < length <= 65536 else {}
+            assert isinstance(body, dict)
+        except (ValueError, UnicodeDecodeError, AssertionError):
+            return self.send_json(400, error("bad_request", "Send a JSON body."))
+        path = self.path.split("?", 1)[0]
+        if path == "/vim/send":
+            problem = VIM.send(str(body.get("from") or "").lower(), str(body.get("to") or "").lower(), body.get("text") or "")
+            if problem:
+                return self.send_json(400, error("not_sent", problem))
+            return self.send_json(200, {"status": "sent"})
+        if path == "/vim/delivered":
+            VIM.delivered(str(body.get("id") or ""))
+            return self.send_json(200, {"status": "ok"})
+        return self.send_json(404, error("not_found", "Unknown path."))
+
+
 def admin(args):
     """python3 vpp_server.py robots | release <esn>   (stop the server first: it keeps its own copy of the data)"""
     emails = {u["user_id"]: u["email"] for u in STORE.users.values()}
@@ -950,6 +1169,9 @@ def main():
         log.info("OS updates also over plain HTTP on port %s", CFG["ota_http_port"])
     if CFG.get("relay_dir"):
         Relay().start()
+    if int(CFG.get("vim_port") or 0):
+        vim = ThreadingHTTPServer(("127.0.0.1", int(CFG["vim_port"])), VimInternal)
+        threading.Thread(target=vim.serve_forever, daemon=True).start()
     log.info("VTCS (Vector Tech Community Server) on https://%s:%s (wire-pod: %s)", CFG["host"], CFG["port"], CFG["wirepod_url"])
     try:
         server.serve_forever()

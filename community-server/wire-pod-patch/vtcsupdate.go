@@ -44,7 +44,7 @@ type vtcsQuestion struct {
 var (
 	vtcsMu      sync.Mutex
 	vtcsPending = map[string]vtcsQuestion{}
-	vtcsVersion = regexp.MustCompile(`\d+\.\d+\.\d+\.\d+[a-z]?`)
+	vtcsVersion = regexp.MustCompile(`\d+\.\d+\.\d+(\.\d+)?[a-z]?`)
 )
 
 // VTCSUpdateIntent handles "check for updates", "check update status", and the answer to "release notes, update,
@@ -232,8 +232,20 @@ func vtcsLatest() (vtcsRelease, error) {
 	return rel, json.NewDecoder(resp.Body).Decode(&rel)
 }
 
-// vtcsCompare compares VictorOS versions like 3.0.2.44d by their numbers.
+// vtcsLegacy reports a version from the numbering inherited from WireOS (3.0.2.44d).
+// VictorOS's own numbering (1.0.0) starts over, so any of it is newer than any legacy one.
+func vtcsLegacy(v string) bool {
+	return strings.Count(v, ".") >= 3
+}
+
+// vtcsCompare compares VictorOS versions like 1.0.3 (or legacy 3.0.2.44d) by their numbers.
 func vtcsCompare(a, b string) int {
+	if la, lb := vtcsLegacy(a), vtcsLegacy(b); la != lb {
+		if la {
+			return -1
+		}
+		return 1
+	}
 	pa, pb := strings.Split(strings.TrimRight(a, "abcdefghijklmnopqrstuvwxyz"), "."),
 		strings.Split(strings.TrimRight(b, "abcdefghijklmnopqrstuvwxyz"), ".")
 	for i := 0; i < len(pa) || i < len(pb); i++ {
@@ -299,23 +311,23 @@ func vtcsRobot(esn string) (*vector.Vector, error) {
 }
 
 // vtcsSay takes behavior control, calls granted (if any), says the text in Vector's voice with his talking
-// animations, and lets go.
-func vtcsSay(robot *vector.Vector, text string, granted func()) {
+// animations, and lets go. False if it couldn't get control (robot unreachable).
+func vtcsSay(robot *vector.Vector, text string, granted func()) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	r, err := robot.Conn.BehaviorControl(ctx)
 	if err != nil {
 		logger.Println("VTCS update: behavior control: " + err.Error())
-		return
+		return false
 	}
 	if err := r.Send(&vectorpb.BehaviorControlRequest{RequestType: &vectorpb.BehaviorControlRequest_ControlRequest{
 		ControlRequest: &vectorpb.ControlRequest{Priority: vectorpb.ControlRequest_OVERRIDE_BEHAVIORS}}}); err != nil {
-		return
+		return false
 	}
 	for {
 		resp, err := r.Recv()
 		if err != nil {
-			return
+			return false
 		}
 		if resp.GetControlGrantedResponse() != nil {
 			break
@@ -327,9 +339,10 @@ func vtcsSay(robot *vector.Vector, text string, granted func()) {
 	}
 	robot.Conn.PlayAnimation(ctx, &vectorpb.PlayAnimationRequest{
 		Animation: &vectorpb.Animation{Name: "anim_getin_tts_01"}, Loops: 1})
-	robot.Conn.SayText(ctx, &vectorpb.SayTextRequest{Text: text, UseVectorVoice: true, DurationScalar: 1.0})
+	_, sayErr := robot.Conn.SayText(ctx, &vectorpb.SayTextRequest{Text: text, UseVectorVoice: true, DurationScalar: 1.0})
 	r.Send(&vectorpb.BehaviorControlRequest{RequestType: &vectorpb.BehaviorControlRequest_ControlRelease{
 		ControlRelease: &vectorpb.ControlRelease{}}})
 	r.CloseSend()
 	time.Sleep(500 * time.Millisecond)
+	return sayErr == nil
 }

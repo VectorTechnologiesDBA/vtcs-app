@@ -31,6 +31,9 @@ public class ExtrasActivity extends Screen {
         open("Weather", WeatherActivity.class);
         open("Knowledge", KnowledgeActivity.class);
 
+        heading("VIM");
+        open("Messages", MessagesActivity.class);
+
         heading("Connection");
         open("Remote access", RemoteActivity.class);
 
