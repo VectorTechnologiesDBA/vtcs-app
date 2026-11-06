@@ -48,6 +48,8 @@ var (
 	vimPending = map[string]vimQuestion{}
 	vimClient  = http.Client{Timeout: 10 * time.Second}
 	// Phrases that start a message, longest first; the contact's name follows.
+	// Longest first, otherwise "send a message to Bob" becomes a message to a contact named "a message to Bob",
+	// and nobody wants to explain that to Bob.
 	vimTriggers = []string{"send a text message to", "send a message to", "send a text to", "send text to",
 		"send message to", "text message", "send a", "send", "message", "text", "texts"}
 )
@@ -71,6 +73,7 @@ func VTCSVimIntent(req interface{}, voiceText string, botSerial string) bool {
 		}
 		text := strings.Join(words, " ")
 		switch text {
+		// The "I panicked and changed my mind" section. Vector respects your right to remain silent.
 		case "", "cancel", "never mind", "nevermind", "nothing", "stop":
 			vtcsRespond(req, voiceText, robot, "Okay, I won't send anything.", false)
 		default:
@@ -166,6 +169,7 @@ func vimMatch(words []string, contacts []vimContact) (vimContact, string, bool) 
 	rest := words[bestLen:]
 	r := strings.Join(rest, " ")
 	switch r {
+	// "send Bob a message" is not the message. If it were, Bob would get "a message" and be very confused.
 	case "a message", "a text", "a text message", "message", "text":
 		return best, "", true
 	}
@@ -175,6 +179,8 @@ func vimMatch(words []string, contacts []vimContact) (vimContact, string, bool) 
 	return best, r, true
 }
 
+// Vosk has never heard a name it couldn't mangle. One wrong letter per six is forgiven; "Alec" is Alex,
+// "Bobb" is Bob, and "Grandma Sue" is, against all odds, still Grandma Sue.
 func vimSimilar(heard, name string) bool {
 	if heard == name {
 		return true
@@ -185,6 +191,8 @@ func vimSimilar(heard, name string) bool {
 	return vimDistance(heard, name) <= 1+len(name)/6
 }
 
+// Levenshtein distance: how many typos apart two words are. Written by hand because importing a library to
+// count letters felt like hiring a moving company to carry a sandwich.
 func vimDistance(a, b string) int {
 	prev := make([]int, len(b)+1)
 	for j := range prev {
@@ -252,6 +260,8 @@ func init() {
 
 // vimAnnouncer says waiting messages on the robots this wire-pod knows. A robot that can't be reached is tried
 // again a minute later; its messages stay queued on the server until then.
+// The tiny mail carrier who lives inside wire-pod. Neither rain, nor snow, nor a robot asleep on its charger
+// stays this goroutine from the swift completion of its appointed rounds (every 5 seconds).
 func vimAnnouncer() {
 	retry := map[string]time.Time{}
 	for {
@@ -281,6 +291,7 @@ func vimAnnouncer() {
 				}
 				continue
 			}
+			// Nobody home. Leave it on the porch and knock again in a minute, like a polite but persistent delivery guy.
 			retry[m.To] = time.Now().Add(time.Minute)
 		}
 	}

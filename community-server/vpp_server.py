@@ -237,9 +237,9 @@ class Vim:
     each under the name its owner gives the other. A message to a contact (said to Vector, "text Bob", or typed in
     the app) waits in the queue until wire-pod announces it on the other robot (VimInternal: /vim/pending)."""
 
-    ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L
+    ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L: nobody should lose a friendship over "is that a zero"
     MAX_TEXT = 300
-    MAX_QUEUED = 20  # per recipient
+    MAX_QUEUED = 20  # per recipient. Past 20 unread messages it stops being chatting and starts being a hostage situation
 
     def __init__(self, data_dir):
         self.path = os.path.join(data_dir, "vim.json")
@@ -292,7 +292,8 @@ class Vim:
             if other is None:
                 return None, "No robot has that code. Check it in the other person's app."
             if other == esn:
-                # your own code: a contact for yourself, so one robot can try VIM out ("text me" -> he says it)
+                # your own code: a contact for yourself, so one robot can try VIM out ("text me" -> he says it).
+                # For people whose only friend is their robot. No judgment. He's a great listener.
                 me["contacts"][esn] = name or me["name"]
                 self._save()
                 return me["contacts"][esn], None
