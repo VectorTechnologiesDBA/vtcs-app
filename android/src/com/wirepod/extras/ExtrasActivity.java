@@ -32,7 +32,7 @@ public class ExtrasActivity extends Screen {
         open("Knowledge", KnowledgeActivity.class);
 
         heading("VIM");
-        open("Messages", MessagesActivity.class);
+        feature("Messages", "vim", MessagesActivity.class);
 
         heading("Connection");
         open("Remote access", RemoteActivity.class);

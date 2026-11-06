@@ -232,6 +232,7 @@ namespace Patcher
 				tiles.Add(new JsonObject { ["Id"] = "wirepod_drive", ["CategoryTitle"] = "Drive", ["CategoryIcon"] = "nav_icon_drive_sml", ["FeaturedIndex"] = 0, ["FeatureFlagId"] = "wirepod_drive", ["InfoCardIds"] = new JsonArray() });
 				tiles.Add(new JsonObject { ["Id"] = "wirepod_ssh", ["CategoryTitle"] = "SSH", ["CategoryIcon"] = "nav_icon_ssh_sml", ["FeaturedIndex"] = 0, ["FeatureFlagId"] = "wirepod_ssh", ["InfoCardIds"] = new JsonArray() });
 				tiles.Add(new JsonObject { ["Id"] = "wirepod_quick", ["CategoryTitle"] = "Quick Actions", ["CategoryIcon"] = "nav_icon_quickactions_sml", ["FeaturedIndex"] = 0, ["FeatureFlagId"] = "wirepod_quick", ["InfoCardIds"] = new JsonArray() });
+				tiles.Add(new JsonObject { ["Id"] = "wirepod_vim", ["CategoryTitle"] = "Messages", ["CategoryIcon"] = "nav_icon_messages_sml", ["FeaturedIndex"] = 0, ["FeatureFlagId"] = "wirepod_vim", ["InfoCardIds"] = new JsonArray() });
 			});
 			MethodDef cellSelected = Program.FindMethod(Program.FindType(chewie, "chewie.Features.Home.HomeFlowModel"), "HandleCellSelected");
 			{

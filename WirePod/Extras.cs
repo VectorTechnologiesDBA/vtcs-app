@@ -118,6 +118,10 @@ namespace WirePod
 			{
 				screen = "QuickActionsActivity";
 			}
+			else if (categoryId == "wirepod_vim")
+			{
+				screen = "MessagesActivity";
+			}
 			else
 			{
 				return false;
@@ -128,7 +132,7 @@ namespace WirePod
 		}
 
 		/// <summary>The Home tiles Extra features can add; each has its own switch on the Extra features page.</summary>
-		private static readonly string[] kTiles = new string[] { "wirepod_drive", "wirepod_ssh", "wirepod_quick" };
+		private static readonly string[] kTiles = new string[] { "wirepod_drive", "wirepod_ssh", "wirepod_quick", "wirepod_vim" };
 
 		/// <summary>Hook for ChewieFeatureFlagService.IsFeatureEnabled: our tiles' feature flags (= their ids).</summary>
 		public static bool IsExtrasFlag(string featureId)
