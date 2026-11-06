@@ -356,6 +356,62 @@ class Vim:
 VIM = Vim(CFG["data_dir"])
 
 
+class Quiet:
+    """Quiet hours for each robot, in data/quiet.json: esn -> {"rev": n, "settings": {...}}. Set in the app; wire-pod
+    sends them to the robot (VictorOS's "vtcs_quiet" app intent) whenever rev changes. VictorOS applies them in its
+    sleep cycle: during quiet hours only "Hey Vector" wakes him, and bedtime "sleep" sends him to bed."""
+
+    DEFAULT = {"enabled": False, "bedtime": "nothing", "snore": True,
+               "days": [{"on": True, "start": "22:00", "end": "07:00"} for _ in range(7)]}  # Sunday first
+    TIME = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+    def __init__(self, data_dir):
+        self.path = os.path.join(data_dir, "quiet.json")
+        self.lock = threading.Lock()
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                self.robots = json.load(f)
+        except (OSError, ValueError):
+            self.robots = {}
+
+    def get(self, esn):
+        r = self.robots.get(esn)
+        return json.loads(json.dumps(r["settings"] if r else self.DEFAULT))
+
+    @classmethod
+    def clean(cls, b):
+        """Settings from the app, checked. (settings, None) or (None, what's wrong)."""
+        days = b.get("days")
+        if not isinstance(days, list) or len(days) != 7:
+            return None, "Send 7 days, Sunday first."
+        out = []
+        for d in days:
+            if not isinstance(d, dict):
+                return None, "Bad day."
+            start, end = str(d.get("start") or ""), str(d.get("end") or "")
+            if not cls.TIME.match(start) or not cls.TIME.match(end):
+                return None, "Use 24-hour times like 22:00."
+            out.append({"on": bool(d.get("on")), "start": start, "end": end})
+        return {"enabled": bool(b.get("enabled")), "bedtime": "sleep" if b.get("bedtime") == "sleep" else "nothing",
+                "snore": bool(b.get("snore", True)), "days": out}, None
+
+    def set(self, esn, settings):
+        with self.lock:
+            rev = (self.robots.get(esn) or {}).get("rev", 0) + 1
+            self.robots[esn] = {"rev": rev, "settings": settings}
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.robots, f, indent=2)
+            os.replace(tmp, self.path)
+
+    def all(self):
+        with self.lock:
+            return json.loads(json.dumps(self.robots))
+
+
+QUIET = Quiet(CFG["data_dir"])
+
+
 def write_perbot(esn):
     """Give wire-pod a robot's settings (its owner's), in perbot_dir/<esn>.json; wire-pod reads them for every
     weather and knowledge graph request (wire-pod-patch/). An unowned robot's file is removed: it uses wire-pod's
@@ -722,6 +778,8 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
             return self.portal()
         if path == "/v1/me":
             return self.me()
+        if path == "/v1/quiet":
+            return self.quiet({"esn": (self.query().get("serial") or [""])[0]})
         if path == "/v1/vim":
             return self.vim("info", {"esn": (self.query().get("serial") or [""])[0]})
         if path == "/v1":
@@ -754,6 +812,8 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
                 return self.send_json(409, error("account_exists", "An account with that email already exists."))
             log.info("created account %s", username)
             return self.send_json(200, {"user": public_user(user)})
+        if path == "/v1/quiet":
+            return self.quiet(body, save=True)
         if path.startswith("/v1/vim/"):
             return self.vim(path[len("/v1/vim/"):], body)
         if path == "/v1/robots/release":
@@ -786,6 +846,26 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
 
     def user_id(self):
         return STORE.user_id_for(self.token())
+
+    def quiet(self, body, save=False):
+        """Quiet hours for a robot on the signed-in account:
+            GET  /v1/quiet?serial=<esn>      {"enabled", "bedtime": "sleep"|"nothing", "snore", "days": [7 x {on, start, end}]}
+            POST /v1/quiet {esn, ...same}    save (wire-pod sends them to the robot)"""
+        user_id = self.user_id()
+        if not user_id:
+            return self.send_json(401, error("not_signed_in", "Sign in to use this."))
+        esn = str(body.get("esn") or "").strip().lower()
+        if not ESN.match(esn):
+            return self.send_json(400, error("bad_serial", "Say which robot (esn)."))
+        if STORE.owner_of(esn) != user_id:
+            return self.send_json(403, error("not_your_robot", "That robot isn't set up on your account."))
+        if save:
+            settings, problem = QUIET.clean(body)
+            if problem:
+                return self.send_json(400, error("bad_settings", problem))
+            QUIET.set(esn, settings)
+            log.info("quiet hours for %s: %s", esn, "on" if settings["enabled"] else "off")
+        return self.send_json(200, QUIET.get(esn))
 
     def vim(self, action, body):
         """VIM from the app, for a robot on the signed-in account:
@@ -1098,6 +1178,7 @@ class VimInternal(QuietLog, BaseHTTPRequestHandler):
         GET  /vim/contacts?esn=<esn>       {"contacts": [{esn, name}]}   who that robot can text
         POST /vim/send {from, to, text}    a message said to Vector
         GET  /vim/pending                  {"messages": [{id, to, from_name, text, sent}]}   to announce
+        GET  /quiet/all                    {"robots": {esn: {rev, settings}}}   quiet hours to send to robots
         POST /vim/delivered {id}           announced: forget it"""
 
     def log_message(self, fmt, *args):
@@ -1121,6 +1202,8 @@ class VimInternal(QuietLog, BaseHTTPRequestHandler):
             return self.send_json(200, {"contacts": [{"esn": e, "name": n} for e, n in VIM.contacts(esn).items()]})
         if path == "/vim/pending":
             return self.send_json(200, {"messages": VIM.pending()})
+        if path == "/quiet/all":
+            return self.send_json(200, {"robots": QUIET.all()})
         return self.send_json(404, error("not_found", "Unknown path."))
 
     def do_POST(self):

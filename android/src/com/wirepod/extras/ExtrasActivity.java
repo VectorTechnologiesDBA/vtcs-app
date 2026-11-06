@@ -34,6 +34,9 @@ public class ExtrasActivity extends Screen {
         heading("VIM");
         feature("Messages", "vim", MessagesActivity.class);
 
+        heading("Sleep");
+        open("Quiet hours", QuietHoursActivity.class);
+
         heading("Connection");
         open("Remote access", RemoteActivity.class);
 

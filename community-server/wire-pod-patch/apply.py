@@ -52,6 +52,7 @@ shutil.copy(os.path.join(HERE, "relay.go"), os.path.join(ROOT, "vars", "relay.go
 shutil.copy(os.path.join(HERE, "houndify_perbot.go"), os.path.join(ROOT, "wirepod", "preqs", "houndify_perbot.go"))
 shutil.copy(os.path.join(HERE, "vtcsupdate.go"), os.path.join(ROOT, "wirepod", "ttr", "vtcsupdate.go"))
 shutil.copy(os.path.join(HERE, "vtcsvim.go"), os.path.join(ROOT, "wirepod", "ttr", "vtcsvim.go"))
+shutil.copy(os.path.join(HERE, "vtcsquiet.go"), os.path.join(ROOT, "wirepod", "ttr", "vtcsquiet.go"))
 # The Linux package's entry point (data in /etc/wire-pod/wire-pod, settings from /etc/wire-pod/config.ini).
 os.makedirs(os.path.join(sys.argv[1], "chipper", "cmd", "packaged"), exist_ok=True)
 shutil.copy(os.path.join(HERE, "packaged_main.go"), os.path.join(sys.argv[1], "chipper", "cmd", "packaged", "main.go"))
