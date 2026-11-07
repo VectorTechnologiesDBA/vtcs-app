@@ -305,6 +305,7 @@ class Vim:
     def remove(self, esn, other):
         with self.lock:
             self._robot(esn)["contacts"].pop(other, None)
+            self._robot(esn).get("sounds", {}).pop(other, None)
             if other in self.robots:
                 self.robots[other]["contacts"].pop(esn, None)
             self._save()
@@ -349,8 +350,29 @@ class Vim:
                 self._save()
 
     def contacts(self, esn):
+        """{contact esn: {"name", "sounds"}}: "sounds" are what speech-to-text hears for that name, taught by voice
+        ("learn how to say Jacek" -> "jae sick")."""
         with self.lock:
-            return dict(self._robot(esn)["contacts"])
+            r = self._robot(esn)
+            sounds = r.get("sounds") or {}
+            return {e: {"name": n, "sounds": list(sounds.get(e, []))} for e, n in r["contacts"].items()}
+
+    MAX_SOUNDS = 5  # per contact. If it takes more than five tries, the name may be the problem, not Vector
+
+    def learn_sound(self, esn, other, heard):
+        """Remember that speech-to-text hears `heard` when esn's owner says that contact's name."""
+        heard = " ".join(str(heard).lower().split())[:60]
+        with self.lock:
+            r = self._robot(esn)
+            if not heard or other not in r["contacts"]:
+                return False
+            lst = r.setdefault("sounds", {}).setdefault(other, [])
+            if heard in lst:
+                lst.remove(heard)
+            lst.insert(0, heard)
+            del lst[self.MAX_SOUNDS:]
+            self._save()
+            return True
 
 
 VIM = Vim(CFG["data_dir"])
@@ -1182,7 +1204,8 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
 
 class VimInternal(QuietLog, BaseHTTPRequestHandler):
     """VIM for wire-pod on this machine (listens on 127.0.0.1 only, no sign-in):
-        GET  /vim/contacts?esn=<esn>       {"contacts": [{esn, name}]}   who that robot can text
+        GET  /vim/contacts?esn=<esn>       {"contacts": [{esn, name, sounds}]}   who that robot can text
+        POST /vim/sound {esn, contact, heard}   learn how speech-to-text hears a contact's name
         POST /vim/send {from, to, text}    a message said to Vector
         GET  /vim/pending                  {"messages": [{id, to, from_name, text, sent}]}   to announce
         GET  /quiet/all                    {"robots": {esn: {rev, settings}}}   quiet hours to send to robots
@@ -1206,7 +1229,8 @@ class VimInternal(QuietLog, BaseHTTPRequestHandler):
             esn = (q.get("esn") or [""])[0].lower()
             if not ESN.match(esn):
                 return self.send_json(400, error("bad_serial", "Say which robot (esn=)."))
-            return self.send_json(200, {"contacts": [{"esn": e, "name": n} for e, n in VIM.contacts(esn).items()]})
+            return self.send_json(200, {"contacts": [{"esn": e, "name": c["name"], "sounds": c["sounds"]}
+                                                     for e, c in VIM.contacts(esn).items()]})
         if path == "/vim/pending":
             return self.send_json(200, {"messages": VIM.pending()})
         if path == "/quiet/all":
@@ -1226,6 +1250,10 @@ class VimInternal(QuietLog, BaseHTTPRequestHandler):
             if problem:
                 return self.send_json(400, error("not_sent", problem))
             return self.send_json(200, {"status": "sent"})
+        if path == "/vim/sound":
+            ok = VIM.learn_sound(str(body.get("esn") or "").lower(), str(body.get("contact") or "").lower(),
+                                 body.get("heard") or "")
+            return self.send_json(200 if ok else 400, {"status": "ok"} if ok else error("not_saved", "Unknown contact."))
         if path == "/vim/delivered":
             VIM.delivered(str(body.get("id") or ""))
             return self.send_json(200, {"status": "ok"})

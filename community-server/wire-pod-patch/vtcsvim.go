@@ -4,7 +4,9 @@ package wirepod_ttr
 // class Vim); people add each other's robots in the VTCS app with an add code.
 //
 //	"text Bob"                 -> "What do you want to say to Bob?", then Vector listens for the message
-//	"text Bob I'm on my way"   -> sent straight away
+//	"text Bob I'm on my way"   -> "I heard: I'm on my way. Is that correct?" yes sends, no lets you say it again
+//	"learn how to say Jacek"   -> "How do you say Jacek?", then "I heard jae sick. Is that correct?" and from then
+//	                              on "jae sick" means Jacek (kept by the server, per contact)
 //	(also "message Bob", "send a text/message to Bob", "send Bob a message")
 //
 // Messages for robots on this wire-pod (said to a robot or typed in the app) are announced on the recipient:
@@ -27,8 +29,9 @@ import (
 const vimURL = "http://127.0.0.1:8089"
 
 type vimContact struct {
-	Esn  string `json:"esn"`
-	Name string `json:"name"`
+	Esn    string   `json:"esn"`
+	Name   string   `json:"name"`
+	Sounds []string `json:"sounds"` // how speech-to-text hears the name, learned by voice
 }
 
 type vimMessage struct {
@@ -38,9 +41,19 @@ type vimMessage struct {
 	Text     string `json:"text"`
 }
 
+// What Vector is waiting to hear back.
+const (
+	vimAskMessage = iota // "What do you want to say to Bob?"
+	vimAskSend           // "I heard: .... Is that correct?"
+	vimAskName           // "How do you say Jacek?"
+	vimAskNameOK         // "I heard jae sick. Is that correct?"
+)
+
 type vimQuestion struct {
 	asked time.Time
+	stage int
 	to    vimContact
+	text  string // the message, or how the name was heard
 }
 
 var (
@@ -52,34 +65,98 @@ var (
 	// and nobody wants to explain that to Bob.
 	vimTriggers = []string{"send a text message to", "send a message to", "send a text to", "send text to",
 		"send message to", "text message", "send a", "send", "message", "text", "texts"}
+	vimLearnTriggers = []string{"learn how to say", "learn how to pronounce", "learn to say", "learn to pronounce",
+		"learn how you say", "learn the name"}
+	vimYes    = []string{"yes", "yeah", "yep", "yup", "correct", "right", "sure", "okay", "ok", "send it", "that's right", "it is"}
+	vimNo     = []string{"no", "nope", "nah", "wrong", "incorrect", "not", "that's wrong"}
+	vimCancel = []string{"", "cancel", "never mind", "nevermind", "nothing", "stop", "forget it", "quit"}
 )
+
+// vimIs: the words are one of the answers, or start with one ("yes please", "no that's wrong").
+// Vector does not do "maybe". Vector is a robot of conviction.
+func vimIs(words []string, answers []string) bool {
+	t := strings.Join(words, " ")
+	for _, a := range answers {
+		if t == a || (a != "" && strings.HasPrefix(t, a+" ")) {
+			return true
+		}
+	}
+	return false
+}
+
+func vimAsk(esn string, q vimQuestion) {
+	q.asked = time.Now()
+	vimMu.Lock()
+	vimPending[esn] = q
+	vimMu.Unlock()
+}
 
 // VTCSVimIntent handles "text <contact>" and the message after "What do you want to say to <contact>?".
 // True if it handled the request.
 func VTCSVimIntent(req interface{}, voiceText string, botSerial string) bool {
 	esn := strings.ToLower(botSerial)
-	words := strings.Fields(strings.ToLower(strings.Trim(voiceText, " .?!")))
+	words := strings.Fields(strings.ToLower(strings.ReplaceAll(strings.Trim(voiceText, " .?!"), ",", "")))
 
 	vimMu.Lock()
 	q, waiting := vimPending[esn]
 	delete(vimPending, esn)
 	vimMu.Unlock()
 	if waiting && time.Since(q.asked) < time.Minute {
-		logger.Println("Bot " + esn + " VIM message for " + q.to.Name + ": " + voiceText)
+		logger.Println("Bot " + esn + " VIM answer (" + q.to.Name + "): " + voiceText)
 		robot, err := vtcsRobot(botSerial)
 		if err != nil {
 			IntentPass(req, "intent_system_noaudio", voiceText, map[string]string{}, false)
 			return true
 		}
-		text := strings.Join(words, " ")
-		switch text {
 		// The "I panicked and changed my mind" section. Vector respects your right to remain silent.
-		case "", "cancel", "never mind", "nevermind", "nothing", "stop":
-			vtcsRespond(req, voiceText, robot, "Okay, I won't send anything.", false)
-		default:
-			vtcsRespond(req, voiceText, robot, vimSend(esn, q.to, voiceText), false)
+		if len(words) <= 2 && vimIs(words, vimCancel) {
+			vtcsRespond(req, voiceText, robot, "Okay, never mind.", false)
+			return true
+		}
+		said := strings.Trim(voiceText, " .?!")
+		switch q.stage {
+		case vimAskMessage:
+			q.stage, q.text = vimAskSend, said
+			vimAsk(esn, q)
+			vtcsRespond(req, voiceText, robot, "I heard: "+said+". Is that correct?", true)
+		case vimAskSend:
+			switch {
+			case vimIs(words, vimYes):
+				vtcsRespond(req, voiceText, robot, vimSend(esn, q.to, q.text), false)
+			case vimIs(words, vimNo):
+				q.stage, q.text = vimAskMessage, ""
+				vimAsk(esn, q)
+				vtcsRespond(req, voiceText, robot, "Okay, say it again.", true)
+			default:
+				vimAsk(esn, q)
+				vtcsRespond(req, voiceText, robot, "Should I send it? Say yes or no.", true)
+			}
+		case vimAskName:
+			q.stage, q.text = vimAskNameOK, strings.Join(words, " ")
+			vimAsk(esn, q)
+			vtcsRespond(req, voiceText, robot, "I heard "+q.text+". Is that correct?", true)
+		case vimAskNameOK:
+			switch {
+			case vimIs(words, vimYes):
+				if vimLearn(esn, q.to, q.text) {
+					vtcsRespond(req, voiceText, robot, "Got it. Now I know that's "+q.to.Name+".", false)
+				} else {
+					vtcsRespond(req, voiceText, robot, "I couldn't save that right now. Try again later.", false)
+				}
+			case vimIs(words, vimNo):
+				q.stage, q.text = vimAskName, ""
+				vimAsk(esn, q)
+				vtcsRespond(req, voiceText, robot, "Okay, say "+q.to.Name+" again.", true)
+			default:
+				vimAsk(esn, q)
+				vtcsRespond(req, voiceText, robot, "Is that right? Say yes or no.", true)
+			}
 		}
 		return true
+	}
+
+	if rest, ok := vimAfterLearn(words); ok {
+		return vimLearnStart(req, voiceText, botSerial, esn, rest)
 	}
 
 	rest, ok := vimAfterTrigger(words)
@@ -117,14 +194,78 @@ func VTCSVimIntent(req interface{}, voiceText string, botSerial string) bool {
 			vtcsRespond(req, voiceText, robot, "I don't have anyone called "+name+". You can add people in the Vector app.", false)
 		}
 	case message != "":
-		vtcsRespond(req, voiceText, robot, vimSend(esn, to, message), false)
+		vimAsk(esn, vimQuestion{stage: vimAskSend, to: to, text: message})
+		vtcsRespond(req, voiceText, robot, "I heard: "+message+". Is that correct?", true)
 	default:
-		vimMu.Lock()
-		vimPending[esn] = vimQuestion{asked: time.Now(), to: to}
-		vimMu.Unlock()
+		vimAsk(esn, vimQuestion{stage: vimAskMessage, to: to})
 		vtcsRespond(req, voiceText, robot, "What do you want to say to "+to.Name+"?", true)
 	}
 	return true
+}
+
+// vimAfterLearn: the words after "learn how to say" etc. (the name, as badly heard as ever).
+func vimAfterLearn(words []string) ([]string, bool) {
+	t := strings.Join(words, " ") + " "
+	for _, trig := range vimLearnTriggers {
+		if strings.HasPrefix(t, trig+" ") {
+			rest := strings.Fields(t[len(trig):])
+			// "learn how to say Jacek's name"
+			if n := len(rest); n > 1 && rest[n-1] == "name" {
+				rest = rest[:n-1]
+			}
+			return rest, len(rest) > 0
+		}
+	}
+	return nil, false
+}
+
+// vimLearnStart: "learn how to say Jacek". The name was probably misheard (that's why we're here), so take the
+// closest contact rather than insisting, and say which one, so you can cancel if it picked wrong.
+func vimLearnStart(req interface{}, voiceText, botSerial, esn string, rest []string) bool {
+	logger.Println("Bot " + esn + " VIM learn: " + voiceText)
+	robot, err := vtcsRobot(botSerial)
+	if err != nil {
+		IntentPass(req, "intent_system_noaudio", voiceText, map[string]string{}, false)
+		return true
+	}
+	contacts, err := vimContacts(esn)
+	switch {
+	case err != nil:
+		vtcsRespond(req, voiceText, robot, "I can't reach Vector Tech messaging right now. Try again later.", false)
+	case len(contacts) == 0:
+		vtcsRespond(req, voiceText, robot, "You don't have anyone in your contacts yet. Add people in the Vector app.", false)
+	default:
+		to, _, found := vimMatch(rest, contacts)
+		if !found {
+			to = vimClosest(strings.Join(rest, ""), contacts)
+		}
+		vimAsk(esn, vimQuestion{stage: vimAskName, to: to})
+		vtcsRespond(req, voiceText, robot, "Okay. How do you say "+to.Name+"?", true)
+	}
+	return true
+}
+
+// vimClosest: the contact whose name is fewest typos from what was heard, spaces ignored.
+func vimClosest(heard string, contacts []vimContact) vimContact {
+	best, bestD := contacts[0], -1
+	for _, c := range contacts {
+		d := vimDistance(heard, strings.ReplaceAll(strings.ToLower(c.Name), " ", ""))
+		if bestD < 0 || d < bestD {
+			best, bestD = c, d
+		}
+	}
+	return best
+}
+
+// vimLearn saves how a contact's name was heard, on the community server.
+func vimLearn(esn string, to vimContact, heard string) bool {
+	b, _ := json.Marshal(map[string]string{"esn": esn, "contact": to.Esn, "heard": heard})
+	resp, err := vimClient.Post(vimURL+"/vim/sound", "application/json", bytes.NewReader(b))
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
 }
 
 // vimAfterTrigger: the words after "text" / "send a message to" etc., if the request starts with one.
@@ -148,19 +289,22 @@ func vimMatch(words []string, contacts []vimContact) (vimContact, string, bool) 
 	var best vimContact
 	bestLen := 0
 	for _, c := range contacts {
-		name := strings.Fields(strings.ToLower(c.Name))
-		if len(name) == 0 || len(name) > len(words) || len(name) <= bestLen {
-			continue
-		}
-		match := true
-		for i, w := range name {
-			if !vimSimilar(strings.TrimSuffix(strings.Trim(words[i], ","), "'s"), w) {
-				match = false
-				break
+		// the real name, then every way it's been heard ("learn how to say ...")
+		for _, spelled := range append([]string{c.Name}, c.Sounds...) {
+			name := strings.Fields(strings.ToLower(spelled))
+			if len(name) == 0 || len(name) > len(words) || len(name) <= bestLen {
+				continue
 			}
-		}
-		if match {
-			best, bestLen = c, len(name)
+			match := true
+			for i, w := range name {
+				if !vimSimilar(strings.TrimSuffix(strings.Trim(words[i], ","), "'s"), w) {
+					match = false
+					break
+				}
+			}
+			if match {
+				best, bestLen = c, len(name)
+			}
 		}
 	}
 	if bestLen == 0 {
