@@ -164,12 +164,13 @@ vosk_model() {
 		small) name=vosk-model-small-en-us-0.15 ;;
 		*) echo "vosk-model big | lgraph | small"; exit 1 ;;
 	esac
-	if [ ! -d "$HOME/vosk-models/$name" ]; then
+	local store=/opt/vosk-models   # readable by wire-pod whichever user it runs as
+	if [ ! -d "$store/$name" ]; then
 		say "Downloading $name (the big one is 1.8 GB; this takes a while)"
-		mkdir -p "$HOME/vosk-models"
-		wget -q --show-progress -O "$HOME/vosk-models/$name.zip" "https://alphacephei.com/vosk/models/$name.zip"
-		unzip -q "$HOME/vosk-models/$name.zip" -d "$HOME/vosk-models"
-		rm "$HOME/vosk-models/$name.zip"
+		wget -q --show-progress -O "/tmp/$name.zip" "https://alphacephei.com/vosk/models/$name.zip"
+		sudo install -d -m 755 "$store"
+		sudo unzip -q "/tmp/$name.zip" -d "$store"
+		rm "/tmp/$name.zip"
 	fi
 	say "Installing $name as wire-pod's English model"
 	sudo systemctl stop wire-pod
@@ -181,7 +182,7 @@ vosk_model() {
 	if [ "$which" = small ] && [ -d "$dir/model.stock" ]; then
 		sudo ln -s "$dir/model.stock" "$dir/model"
 	else
-		sudo ln -s "$HOME/vosk-models/$name" "$dir/model"
+		sudo ln -s "$store/$name" "$dir/model"
 	fi
 	# the big model has no grammar support; wire-pod would crash at start with it on
 	if [ "$which" = big ] && grep -q '^vosk_with_grammer=true' /etc/wire-pod/config.ini 2>/dev/null; then
