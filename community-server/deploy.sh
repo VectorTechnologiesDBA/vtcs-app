@@ -6,6 +6,7 @@
 #   bash deploy.sh build-wirepod     build a patched wire-pod in ~/wire-pod-build (the running one isn't touched)
 #   bash deploy.sh build-wirepod-whisper   the same, with whisper.cpp speech to text instead of Vosk (much better
 #                                    at names; WHISPER_MODEL=base.en by default, tiny.en if base is too slow)
+#   bash deploy.sh vosk-model big    swap Vosk's model: big (1.8 GB, most accurate), lgraph (128 MB), small (stock)
 #   bash deploy.sh install-wirepod   swap it in for /usr/bin/wire-pod; puts the old one back if it doesn't start
 #   bash deploy.sh rollback-wirepod  put the original /usr/bin/wire-pod back
 #   bash deploy.sh relay             set up the VTCS relay (sshd on port 2222) for robots on other networks
@@ -154,6 +155,53 @@ whisper_cpp() {
 	ls -la "$WHISPER_DIR"
 }
 
+# Vosk's speech model. wire-pod ships the small one, which is quick but mishears a lot; a Pi 5 can run the big one.
+vosk_model() {
+	local which=${1:-big} name dir=/etc/wire-pod/wire-pod/vosk/models/en-US
+	case "$which" in
+		big) name=vosk-model-en-us-0.22 ;;
+		lgraph) name=vosk-model-en-us-0.22-lgraph ;;
+		small) name=vosk-model-small-en-us-0.15 ;;
+		*) echo "vosk-model big | lgraph | small"; exit 1 ;;
+	esac
+	if [ ! -d "$HOME/vosk-models/$name" ]; then
+		say "Downloading $name (the big one is 1.8 GB; this takes a while)"
+		mkdir -p "$HOME/vosk-models"
+		wget -q --show-progress -O "$HOME/vosk-models/$name.zip" "https://alphacephei.com/vosk/models/$name.zip"
+		unzip -q "$HOME/vosk-models/$name.zip" -d "$HOME/vosk-models"
+		rm "$HOME/vosk-models/$name.zip"
+	fi
+	say "Installing $name as wire-pod's English model"
+	sudo systemctl stop wire-pod
+	if [ -d "$dir/model" ] && [ ! -e "$dir/model.stock" ] && [ ! -L "$dir/model" ]; then
+		sudo mv "$dir/model" "$dir/model.stock"   # the model wire-pod came with, kept
+	else
+		sudo rm -rf "$dir/model"
+	fi
+	if [ "$which" = small ] && [ -d "$dir/model.stock" ]; then
+		sudo ln -s "$dir/model.stock" "$dir/model"
+	else
+		sudo ln -s "$HOME/vosk-models/$name" "$dir/model"
+	fi
+	# the big model has no grammar support; wire-pod would crash at start with it on
+	if [ "$which" = big ] && grep -q '^vosk_with_grammer=true' /etc/wire-pod/config.ini 2>/dev/null; then
+		sudo sed -i 's/^vosk_with_grammer=true/vosk_with_grammer=false/' /etc/wire-pod/config.ini
+		echo "Turned vosk_with_grammer off (the big model doesn't support it)."
+	fi
+	sudo systemctl start wire-pod
+	say "Waiting for wire-pod to load the model"
+	for _ in $(seq 1 60); do
+		sleep 5
+		if echo | openssl s_client -connect 127.0.0.1:443 2>/dev/null | grep -q "BEGIN CERTIFICATE"; then
+			echo "wire-pod is up with $name."
+			free -h | head -2
+			return
+		fi
+	done
+	echo "wire-pod didn't come up in 5 minutes. Logs: journalctl -u wire-pod -n 40   Undo: bash $0 vosk-model small"
+	exit 1
+}
+
 install_wirepod() {
 	[ -x "$BUILD/wire-pod" ] || { echo "Build first: bash $0 build-wirepod"; exit 1; }
 	[ -f /usr/bin/wire-pod.orig ] || sudo cp -p /usr/bin/wire-pod /usr/bin/wire-pod.orig
@@ -169,7 +217,7 @@ install_wirepod() {
 	sudo systemctl start wire-pod
 	# Up means the web page (8080) and the voice server Vector talks to (443, with its certificate) both answer.
 	local ok=""
-	for _ in $(seq 1 12); do
+	for _ in $(seq 1 60); do
 		sleep 5
 		if systemctl is-active --quiet wire-pod && curl -s -o /dev/null http://127.0.0.1:8080/ &&
 			echo | openssl s_client -connect 127.0.0.1:443 2>/dev/null | grep -q "BEGIN CERTIFICATE"; then
@@ -207,5 +255,6 @@ case "${1:-}" in
 	install-wirepod) install_wirepod ;;
 	rollback-wirepod) rollback_wirepod ;;
 	relay) relay ;;
+	vosk-model) vosk_model "${2:-big}" ;;
 	*) sed -n '2,10p' "$0"; exit 1 ;;
 esac
