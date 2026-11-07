@@ -206,21 +206,38 @@ func VTCSVimIntent(req interface{}, voiceText string, botSerial string) bool {
 var vimSayWords = map[string]bool{"say": true, "save": true, "said": true, "says": true, "sae": true, "see": true,
 	"sey": true, "stay": true, "set": true, "pronounce": true, "announce": true, "the": true, "name": true}
 
+// Ways "learn" comes out. "going to say jae sick" was also a real request. Vosk was going places.
+var vimLearnWords = map[string]bool{"learn": true, "learned": true, "learning": true, "lauren": true, "lauren's": true,
+	"learns": true, "earn": true, "burn": true, "turn": true}
+
 func vimAfterLearn(words []string) ([]string, bool) {
-	// learn [how] [to|you] <say-ish word> [the] [name] <name> [name]
-	if len(words) < 2 || (words[0] != "learn" && words[0] != "lauren" && words[0] != "learned") {
+	// learn [how] [to|you] <say, or whatever Vosk made of it> [the] [name] <name> [name]
+	if len(words) < 3 {
 		return nil, false
 	}
-	rest := words[1:]
+	var rest []string
+	switch {
+	case vimLearnWords[words[0]]:
+		rest = words[1:]
+	case words[0] == "going" && words[1] == "to" && (words[2] == "say" || words[2] == "save" || words[2] == "said"):
+		rest = words[2:] // "learn how to say" -> "going to say". Strict, so "going to the store" stays shopping
+		if len(rest) < 2 {
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
 	for len(rest) > 0 && (rest[0] == "how" || rest[0] == "to" || rest[0] == "you") {
 		rest = rest[1:]
 	}
-	said := false
-	for len(rest) > 0 && vimSayWords[rest[0]] {
-		rest, said = rest[1:], true
-	}
-	if !said { // "learn something" without a say: not ours
-		return nil, false
+	if len(rest) > 0 && vimSayWords[rest[0]] {
+		for len(rest) > 0 && vimSayWords[rest[0]] {
+			rest = rest[1:]
+		}
+	} else if len(rest) > 1 {
+		rest = rest[1:] // "sage", "sail", "sway": the say slot, however it was heard
+	} else {
+		return nil, false // "learn to dance": not ours
 	}
 	// "learn how to say Jacek's name"
 	if n := len(rest); n > 1 && rest[n-1] == "name" {
