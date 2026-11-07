@@ -123,6 +123,15 @@ public class MessagesActivity extends Screen {
                 if (j.has("code")) {
                     show(j, false);
                 }
+                // the server says when a sent message has to wait
+                if ("dnd".equals(j.optString("held"))) {
+                    return done.replace("Sent to ", "").replace(".", "")
+                            + " has do not disturb on. Your message will be delivered when they turn it off.";
+                }
+                if ("quiet".equals(j.optString("held"))) {
+                    return "Quiet hours is on for " + done.replace("Sent to ", "").replace(".", "")
+                            + ". Your message will be delivered when quiet hours are over.";
+                }
                 return done;
             }
         });

@@ -275,7 +275,7 @@ class Vim:
     def info(self, esn):
         with self.lock:
             r = self._robot(esn)
-            return {"esn": esn, "code": r["code"], "name": r["name"],
+            return {"esn": esn, "code": r["code"], "name": r["name"], "dnd": bool(r.get("dnd")),
                     "contacts": [{"esn": e, "name": n, "say": (r.get("say") or {}).get(e, "")}
                                  for e, n in sorted(r["contacts"].items(), key=lambda x: x[1].lower())]}
 
@@ -352,13 +352,15 @@ class Vim:
         return None
 
     def pending(self):
-        """Waiting messages, with the sender's name as the recipient knows them."""
+        """Waiting messages that can be announced now (not for robots in do not disturb or quiet hours), with the
+        sender's name as the recipient knows them."""
+        held = {m["to"] for m in self.queue if self.held_reason(m["to"])}
         with self.lock:
             return [{"id": m["id"], "to": m["to"], "from": m["from"], "text": m["text"], "sent": m["sent"],
                      "from_name": (self.robots.get(m["to"]) or {}).get("say", {}).get(m["from"])
                                   or (self.robots.get(m["to"]) or {}).get("contacts", {}).get(m["from"])
                                   or (self.robots.get(m["from"]) or {}).get("name") or "someone"}
-                    for m in self.queue]
+                    for m in self.queue if m["to"] not in held]
 
     def delivered(self, msg_id):
         with self.lock:
@@ -366,6 +368,23 @@ class Vim:
             self.queue = [m for m in self.queue if m["id"] != msg_id]
             if len(self.queue) != before:
                 self._save()
+
+    def set_dnd(self, esn, on):
+        with self.lock:
+            self._robot(esn)["dnd"] = bool(on)
+            self._save()
+
+    def dnd(self, esn):
+        with self.lock:
+            return bool((self.robots.get(esn) or {}).get("dnd"))
+
+    def held_reason(self, esn):
+        """Why messages for esn wait instead of being announced now: "dnd", "quiet", or None."""
+        if self.dnd(esn):
+            return "dnd"
+        if QUIET.active(esn):
+            return "quiet"
+        return None
 
     def contacts(self, esn):
         """{contact esn: {"name", "sounds"}}: "sounds" are what speech-to-text hears for that name, taught by voice
@@ -448,6 +467,37 @@ class Quiet:
     def all(self):
         with self.lock:
             return json.loads(json.dumps(self.robots))
+
+    def active(self, esn, now=None):
+        """Whether esn is in quiet hours now, by this server's clock (robots are assumed to be in its time zone)."""
+        q = self.get(esn)
+        if not q.get("enabled"):
+            return False
+        now = now or datetime.now()
+        mins = now.hour * 60 + now.minute
+        today = (now.weekday() + 1) % 7  # Python's Monday=0 -> Sunday=0
+
+        def window(day):
+            d = q["days"][day]
+            if not d.get("on"):
+                return None
+            sh, sm = map(int, d["start"].split(":"))
+            eh, em = map(int, d["end"].split(":"))
+            return sh * 60 + sm, eh * 60 + em
+
+        w = window(today)
+        if w:
+            start, end = w
+            if start <= end and start <= mins < end:
+                return True
+            if start > end and mins >= start:  # tonight's window, before midnight
+                return True
+        w = window((today + 6) % 7)  # last night's window, after midnight
+        if w:
+            start, end = w
+            if start > end and mins < end:
+                return True
+        return False
 
 
 QUIET = Quiet(CFG["data_dir"])
@@ -922,6 +972,7 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
             POST /v1/vim/add     {esn, code, name}     add the robot with that code, calling it name
             POST /v1/vim/rename  {esn, contact, name}
             POST /v1/vim/remove  {esn, contact}
+            POST /v1/vim/dnd     {esn, on}             do not disturb
             POST /v1/vim/pronounce {esn, contact, say}  how Vector says their name ("" = as written)
             POST /v1/vim/send    {esn, to, text}       Vector says it on the contact's robot"""
         user_id = self.user_id()
@@ -955,7 +1006,9 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
             problem = VIM.send(esn, contact, body.get("text") or "")
             if problem:
                 return self.send_json(400, error("not_sent", problem))
-            return self.send_json(200, {"status": "sent"})
+            return self.send_json(200, {"status": "sent", "held": VIM.held_reason(contact) or ""})
+        elif action == "dnd":
+            VIM.set_dnd(esn, bool(body.get("on")))
         elif action != "info":
             return self.send_json(404, error("not_found", "Unknown path."))
         return self.send_json(200, VIM.info(esn))
@@ -1228,6 +1281,8 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
 class VimInternal(QuietLog, BaseHTTPRequestHandler):
     """VIM for wire-pod on this machine (listens on 127.0.0.1 only, no sign-in):
         GET  /vim/contacts?esn=<esn>       {"contacts": [{esn, name, sounds}]}   who that robot can text
+        POST /vim/send replies {"status": "sent", "held": "dnd"|"quiet"|""}: why it won't be announced yet
+        POST /vim/dnd {esn, on}            do not disturb: messages wait until it's off
         POST /vim/sound {esn, contact, heard}   learn how speech-to-text hears a contact's name
         POST /vim/send {from, to, text}    a message said to Vector
         GET  /vim/pending                  {"messages": [{id, to, from_name, text, sent}]}   to announce
@@ -1269,10 +1324,18 @@ class VimInternal(QuietLog, BaseHTTPRequestHandler):
             return self.send_json(400, error("bad_request", "Send a JSON body."))
         path = self.path.split("?", 1)[0]
         if path == "/vim/send":
-            problem = VIM.send(str(body.get("from") or "").lower(), str(body.get("to") or "").lower(), body.get("text") or "")
+            to = str(body.get("to") or "").lower()
+            problem = VIM.send(str(body.get("from") or "").lower(), to, body.get("text") or "")
             if problem:
                 return self.send_json(400, error("not_sent", problem))
-            return self.send_json(200, {"status": "sent"})
+            return self.send_json(200, {"status": "sent", "held": VIM.held_reason(to) or ""})
+        if path == "/vim/dnd":
+            esn = str(body.get("esn") or "").lower()
+            if not ESN.match(esn):
+                return self.send_json(400, error("bad_serial", "Say which robot (esn)."))
+            VIM.set_dnd(esn, bool(body.get("on")))
+            log.info("VIM: do not disturb %s for %s", "on" if body.get("on") else "off", esn)
+            return self.send_json(200, {"dnd": VIM.dnd(esn)})
         if path == "/vim/sound":
             ok = VIM.learn_sound(str(body.get("esn") or "").lower(), str(body.get("contact") or "").lower(),
                                  body.get("heard") or "")

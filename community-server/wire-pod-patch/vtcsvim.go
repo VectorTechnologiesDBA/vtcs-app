@@ -5,6 +5,7 @@ package wirepod_ttr
 //
 //	"text Bob"                 -> "What do you want to say to Bob?", then Vector listens for the message
 //	"text Bob I'm on my way"   -> "I heard: I'm on my way. Is that correct?" yes sends, no lets you say it again
+//	"turn on do not disturb"   -> messages for this robot wait on the server until "turn off do not disturb"
 //	"learn how to say Jacek"   -> "How do you say Jacek?", then "I heard jae sick. Is that correct?" and from then
 //	                              on "jae sick" means Jacek (kept by the server, per contact)
 //	(also "message Bob", "send a text/message to Bob", "send Bob a message")
@@ -14,6 +15,7 @@ package wirepod_ttr
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fforchino/vector-go-sdk/pkg/vectorpb"
 	"github.com/kercre123/wire-pod/chipper/pkg/logger"
 	"github.com/kercre123/wire-pod/chipper/pkg/vars"
 )
@@ -163,6 +166,10 @@ func VTCSVimIntent(req interface{}, voiceText string, botSerial string) bool {
 		return true
 	}
 
+	if on, ok := vimDNDCommand(words); ok {
+		return vimSetDND(req, voiceText, botSerial, esn, on)
+	}
+
 	if rest, ok := vimAfterLearn(words); ok {
 		return vimLearnStart(req, voiceText, botSerial, esn, rest)
 	}
@@ -209,6 +216,69 @@ func VTCSVimIntent(req interface{}, voiceText string, botSerial string) bool {
 		vtcsRespond(req, voiceText, robot, "What do you want to say to "+vimSpoken(to)+"?", true)
 	}
 	return true
+}
+
+// vimDNDCommand: "turn on do not disturb", "do not disturb off", "disable don't disturb", ... -> (on, true).
+func vimDNDCommand(words []string) (bool, bool) {
+	if _, isText := vimAfterTrigger(words); isText { // "text Bob do not disturb me" is a message, not a setting
+		return false, false
+	}
+	t := " " + strings.Join(words, " ") + " "
+	t = strings.ReplaceAll(t, " don't ", " do not ")
+	t = strings.ReplaceAll(t, " dont ", " do not ")
+	if !strings.Contains(t, " do not disturb ") && !strings.Contains(t, " dnd ") {
+		return false, false
+	}
+	for _, off := range []string{" off ", " disable ", " stop ", " end ", " cancel ", " turn of "} {
+		if strings.Contains(t, off) {
+			return false, true
+		}
+	}
+	for _, on := range []string{" on ", " enable ", " start ", " activate ", " set ", " put "} {
+		if strings.Contains(t, on) {
+			return true, true
+		}
+	}
+	return true, true // just "do not disturb": they mean it
+}
+
+func vimSetDND(req interface{}, voiceText, botSerial, esn string, on bool) bool {
+	logger.Println("Bot " + esn + " VIM do not disturb: " + voiceText)
+	robot, err := vtcsRobot(botSerial)
+	if err != nil {
+		IntentPass(req, "intent_system_noaudio", voiceText, map[string]string{}, false)
+		return true
+	}
+	b, _ := json.Marshal(map[string]interface{}{"esn": esn, "on": on})
+	resp, err := vimClient.Post(vimURL+"/vim/dnd", "application/json", bytes.NewReader(b))
+	if err != nil {
+		vtcsRespond(req, voiceText, robot, "I can't reach Vector Tech messaging right now. Try again later.", false)
+		return true
+	}
+	resp.Body.Close()
+	if on {
+		vtcsRespond(req, voiceText, robot, "Do not disturb is on. I'll hold your messages until you turn it off.", false)
+	} else {
+		// held messages come out on their own: the announcer checks every few seconds
+		vtcsRespond(req, voiceText, robot, "Do not disturb is off.", false)
+	}
+	return true
+}
+
+// vimReachable: can wire-pod talk to that robot right now? A quick battery check, a few seconds at most.
+// If a robot can't tell you its battery level, it's not going to read you a text message either.
+func vimReachable(esn string) bool {
+	if !vimKnown(esn) {
+		return false
+	}
+	robot, err := vtcsRobot(vimEsn(esn))
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	_, err = robot.Conn.BatteryState(ctx, &vectorpb.BatteryStateRequest{})
+	return err == nil
 }
 
 // vimAfterLearn: the words after "learn how to say" etc. (the name, as badly heard as ever).
@@ -491,7 +561,20 @@ func vimSend(esn string, to vimContact, text string) string {
 		json.NewDecoder(resp.Body).Decode(&e)
 		return "I couldn't send that. " + e.Message
 	}
-	return "Sent to " + vimSpoken(to) + "."
+	var out struct {
+		Held string `json:"held"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	who := vimSpoken(to)
+	switch {
+	case out.Held == "dnd":
+		return who + " has do not disturb on. Your message will be delivered when they turn it off."
+	case out.Held == "quiet":
+		return "Quiet hours is on for " + who + ". Your message will be delivered when quiet hours are over."
+	case !strings.EqualFold(to.Esn, esn) && !vimReachable(to.Esn):
+		return "I can't reach " + who + "'s Vector right now. Your message will be delivered when it's back online."
+	}
+	return "Sent to " + who + "."
 }
 
 func init() {
