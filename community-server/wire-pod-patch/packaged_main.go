@@ -89,6 +89,9 @@ func main() {
 	if conf["vosk_with_grammer"] == "true" {
 		os.Setenv("VOSK_WITH_GRAMMER", "true")
 	}
+	if v := conf["whisper_audio_ctx"]; v != "" { // Whisper speed vs accuracy, see vtcswhisper.audioCtx
+		os.Setenv("WHISPER_AUDIO_CTX", v)
+	}
 	if conf["use_mdns"] == "false" {
 		os.Setenv("DISABLE_MDNS", "true")
 	}

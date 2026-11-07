@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -141,14 +142,21 @@ func fetchNames(esn string) []string {
 
 // audioCtx: how much of Whisper's 30-second window to actually run. It's 50 steps a second; a 2-second "what time
 // is it" needs ~100, not 1500. Whisper reading 28 seconds of silence was why Vector took 3 seconds to answer.
-// A bit of slack (and a floor) keeps accuracy; WHISPER_AUDIO_CTX=0 turns this off.
+// But cut too far, real robot audio turns "what time is it" into "time is set", so the floor is generous (768,
+// about 15 seconds). WHISPER_AUDIO_CTX sets the floor (1500 = full window, slowest and most accurate; 0 = off).
 func audioCtx(samples int) int {
-	if os.Getenv("WHISPER_AUDIO_CTX") == "0" {
-		return 0
+	floor := 768
+	if v := os.Getenv("WHISPER_AUDIO_CTX"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				return 0
+			}
+			floor = n
+		}
 	}
-	n := samples*50/16000 + 128
-	if n < 384 {
-		n = 384
+	n := samples*50/16000 + 256
+	if n < floor {
+		n = floor
 	}
 	if n > 1500 {
 		n = 1500
