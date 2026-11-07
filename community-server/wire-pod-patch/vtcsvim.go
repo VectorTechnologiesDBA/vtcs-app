@@ -64,7 +64,8 @@ var (
 	// Longest first, otherwise "send a message to Bob" becomes a message to a contact named "a message to Bob",
 	// and nobody wants to explain that to Bob.
 	vimTriggers = []string{"send a text message to", "send a message to", "send a text to", "send text to",
-		"send message to", "text message", "send a", "send", "message", "text", "texts"}
+		"send message to", "text message", "a text message to", "a message to", "a text to", "message to", "text to",
+		"send a", "send", "message", "text", "texts"} // the "a ..." ones: Vosk ate the "send"
 	vimYes    = []string{"yes", "yeah", "yep", "yup", "correct", "right", "sure", "okay", "ok", "send it", "that's right", "it is"}
 	vimNo     = []string{"no", "nope", "nah", "wrong", "incorrect", "not", "that's wrong"}
 	vimCancel = []string{"", "cancel", "never mind", "nevermind", "nothing", "stop", "forget it", "quit"}
@@ -338,13 +339,16 @@ func vimMatch(words []string, contacts []vimContact) (vimContact, string, bool) 
 		// Plan B: sounds like. Vosk doesn't know "Jacek", so it hears "jae sick". Glue the first few heard words
 		// together and compare consonant sounds: "jae sick" -> jsk, "Jacek" -> jsk. Close enough for government work.
 		for _, c := range contacts {
-			want := vimSound(c.Name)
-			if len(want) < 2 {
-				continue
-			}
-			for n := 1; n <= 3 && n <= len(words); n++ {
-				if vimSound(strings.Join(words[:n], "")) == want && n > bestLen {
-					best, bestLen = c, n
+			// the name and every learned way of hearing it, by sound: learned "j sick" also catches "jay sick"
+			for _, spelled := range append([]string{c.Name}, c.Sounds...) {
+				want := vimSound(spelled)
+				if len(want) < 2 {
+					continue
+				}
+				for n := 1; n <= 3 && n <= len(words); n++ {
+					if vimSound(strings.Join(words[:n], "")) == want && n > bestLen {
+						best, bestLen = c, n
+					}
 				}
 			}
 		}
