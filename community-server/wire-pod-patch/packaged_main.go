@@ -6,6 +6,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,22 @@ func readConfigIni() map[string]string {
 	return conf
 }
 
+// savedSTTLanguage: the language in wire-pod's apiConfig.json, or en-US.
+func savedSTTLanguage() string {
+	data, err := os.ReadFile("/etc/wire-pod/wire-pod/apiConfig.json")
+	if err == nil {
+		var c struct {
+			STT struct {
+				Language string `json:"language"`
+			} `json:"STT"`
+		}
+		if json.Unmarshal(data, &c) == nil && c.STT.Language != "" {
+			return c.STT.Language
+		}
+	}
+	return "en-US"
+}
+
 func isPi() bool {
 	model, err := os.ReadFile("/proc/device-tree/model")
 	return err == nil && strings.Contains(string(model), "Raspberry Pi")
@@ -59,6 +76,11 @@ func main() {
 	// vars.ReadConfig rewrites the STT settings (and blanks the language) whenever the saved STT service differs
 	// from STT_SERVICE, so it must name this build's engine.
 	os.Setenv("STT_SERVICE", sttService)
+	// ...and when it does, it takes the language from STT_LANGUAGE. Blank means "not set up", which leaves the voice
+	// server off. So switching Vosk <-> Whisper keeps the language the config already had.
+	if os.Getenv("STT_LANGUAGE") == "" {
+		os.Setenv("STT_LANGUAGE", savedSTTLanguage())
+	}
 
 	conf := readConfigIni()
 	if p := conf["web_port"]; p != "" {
