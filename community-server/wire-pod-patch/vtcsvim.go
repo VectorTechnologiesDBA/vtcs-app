@@ -164,6 +164,21 @@ func vimMatch(words []string, contacts []vimContact) (vimContact, string, bool) 
 		}
 	}
 	if bestLen == 0 {
+		// Plan B: sounds like. Vosk doesn't know "Jacek", so it hears "jae sick". Glue the first few heard words
+		// together and compare consonant sounds: "jae sick" -> jsk, "Jacek" -> jsk. Close enough for government work.
+		for _, c := range contacts {
+			want := vimSound(c.Name)
+			if len(want) < 2 {
+				continue
+			}
+			for n := 1; n <= 3 && n <= len(words); n++ {
+				if vimSound(strings.Join(words[:n], "")) == want && n > bestLen {
+					best, bestLen = c, n
+				}
+			}
+		}
+	}
+	if bestLen == 0 {
 		return best, "", false
 	}
 	rest := words[bestLen:]
@@ -189,6 +204,47 @@ func vimSimilar(heard, name string) bool {
 		return false
 	}
 	return vimDistance(heard, name) <= 1+len(name)/6
+}
+
+// vimSound boils a name down to its consonant sounds: no vowels, soft c is s, ck/q is k, z is s, ph is f,
+// doubles squashed. "Jacek" -> "jsk", "jae sick" -> "jsk", "Katie" -> "kt". A poor man's Soundex, very poor.
+func vimSound(s string) string {
+	s = strings.ToLower(s)
+	var letters []byte
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'a' && s[i] <= 'z' {
+			letters = append(letters, s[i])
+		}
+	}
+	var out []byte
+	for i, ch := range letters {
+		next := byte(0)
+		if i+1 < len(letters) {
+			next = letters[i+1]
+		}
+		switch ch {
+		case 'a', 'e', 'i', 'o', 'u', 'y', 'h', 'w':
+			continue
+		case 'c':
+			if next == 'e' || next == 'i' || next == 'y' {
+				ch = 's'
+			} else {
+				ch = 'k'
+			}
+		case 'q':
+			ch = 'k'
+		case 'z':
+			ch = 's'
+		case 'p':
+			if next == 'h' {
+				ch = 'f'
+			}
+		}
+		if len(out) == 0 || out[len(out)-1] != ch {
+			out = append(out, ch)
+		}
+	}
+	return string(out)
 }
 
 // Levenshtein distance: how many typos apart two words are. Written by hand because importing a library to
