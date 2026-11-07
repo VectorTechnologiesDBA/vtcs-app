@@ -13,7 +13,6 @@ import (
 	"github.com/kercre123/wire-pod/chipper/pkg/initwirepod"
 	"github.com/kercre123/wire-pod/chipper/pkg/logger"
 	"github.com/kercre123/wire-pod/chipper/pkg/vars"
-	stt "github.com/kercre123/wire-pod/chipper/pkg/wirepod/stt/vosk"
 )
 
 const configIni = "/etc/wire-pod/config.ini"
@@ -59,7 +58,7 @@ func main() {
 	os.Setenv("XDG_CONFIG_HOME", "/etc/wire-pod")
 	// vars.ReadConfig rewrites the STT settings (and blanks the language) whenever the saved STT service differs
 	// from STT_SERVICE, so it must name this build's engine.
-	os.Setenv("STT_SERVICE", "vosk")
+	os.Setenv("STT_SERVICE", sttService)
 
 	conf := readConfigIni()
 	if p := conf["web_port"]; p != "" {
@@ -80,5 +79,5 @@ func main() {
 		}
 	}
 
-	initwirepod.StartFromProgramInit(stt.Init, stt.STT, stt.Name)
+	initwirepod.StartFromProgramInit(sttInit, sttSTT, sttName)
 }

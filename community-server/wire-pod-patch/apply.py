@@ -56,6 +56,11 @@ shutil.copy(os.path.join(HERE, "vtcsquiet.go"), os.path.join(ROOT, "wirepod", "t
 # The Linux package's entry point (data in /etc/wire-pod/wire-pod, settings from /etc/wire-pod/config.ini).
 os.makedirs(os.path.join(sys.argv[1], "chipper", "cmd", "packaged"), exist_ok=True)
 shutil.copy(os.path.join(HERE, "packaged_main.go"), os.path.join(sys.argv[1], "chipper", "cmd", "packaged", "main.go"))
+for f in ("packaged_stt_vosk.go", "packaged_stt_whisper.go"):  # which engine: -tags whisper or not
+    shutil.copy(os.path.join(HERE, f), os.path.join(sys.argv[1], "chipper", "cmd", "packaged", f))
+# whisper.cpp engine (used only by -tags whisper builds)
+os.makedirs(os.path.join(ROOT, "wirepod", "stt", "vtcswhisper"), exist_ok=True)
+shutil.copy(os.path.join(HERE, "vtcswhisper.go"), os.path.join(ROOT, "wirepod", "stt", "vtcswhisper", "vtcswhisper.go"))
 
 # Named types, so a robot's settings can be returned as a copy.
 edit("vars/config.go", [

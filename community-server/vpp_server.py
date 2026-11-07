@@ -276,7 +276,8 @@ class Vim:
         with self.lock:
             r = self._robot(esn)
             return {"esn": esn, "code": r["code"], "name": r["name"],
-                    "contacts": [{"esn": e, "name": n} for e, n in sorted(r["contacts"].items(), key=lambda x: x[1].lower())]}
+                    "contacts": [{"esn": e, "name": n, "say": (r.get("say") or {}).get(e, "")}
+                                 for e, n in sorted(r["contacts"].items(), key=lambda x: x[1].lower())]}
 
     def set_name(self, esn, name):
         with self.lock:
@@ -306,6 +307,7 @@ class Vim:
         with self.lock:
             self._robot(esn)["contacts"].pop(other, None)
             self._robot(esn).get("sounds", {}).pop(other, None)
+            self._robot(esn).get("say", {}).pop(other, None)
             if other in self.robots:
                 self.robots[other]["contacts"].pop(esn, None)
             self._save()
@@ -316,6 +318,21 @@ class Vim:
             if other not in contacts:
                 return False
             contacts[other] = name
+            self._save()
+            return True
+
+    def set_say(self, esn, other, say):
+        """How Vector should pronounce a contact's name ("Jacek" -> "Yahtsek"). Empty goes back to the name.
+        Vector reads names like an English teacher reads a roll call: confidently, and wrong."""
+        say = " ".join(str(say).split())[:40]
+        with self.lock:
+            r = self._robot(esn)
+            if other not in r["contacts"]:
+                return False
+            if say:
+                r.setdefault("say", {})[other] = say
+            else:
+                r.get("say", {}).pop(other, None)
             self._save()
             return True
 
@@ -338,7 +355,8 @@ class Vim:
         """Waiting messages, with the sender's name as the recipient knows them."""
         with self.lock:
             return [{"id": m["id"], "to": m["to"], "from": m["from"], "text": m["text"], "sent": m["sent"],
-                     "from_name": (self.robots.get(m["to"]) or {}).get("contacts", {}).get(m["from"])
+                     "from_name": (self.robots.get(m["to"]) or {}).get("say", {}).get(m["from"])
+                                  or (self.robots.get(m["to"]) or {}).get("contacts", {}).get(m["from"])
                                   or (self.robots.get(m["from"]) or {}).get("name") or "someone"}
                     for m in self.queue]
 
@@ -354,8 +372,9 @@ class Vim:
         ("learn how to say Jacek" -> "jae sick")."""
         with self.lock:
             r = self._robot(esn)
-            sounds = r.get("sounds") or {}
-            return {e: {"name": n, "sounds": list(sounds.get(e, []))} for e, n in r["contacts"].items()}
+            sounds, say = r.get("sounds") or {}, r.get("say") or {}
+            return {e: {"name": n, "sounds": list(sounds.get(e, [])), "say": say.get(e, "")}
+                    for e, n in r["contacts"].items()}
 
     MAX_SOUNDS = 5  # per contact. If it takes more than five tries, the name may be the problem, not Vector
 
@@ -903,6 +922,7 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
             POST /v1/vim/add     {esn, code, name}     add the robot with that code, calling it name
             POST /v1/vim/rename  {esn, contact, name}
             POST /v1/vim/remove  {esn, contact}
+            POST /v1/vim/pronounce {esn, contact, say}  how Vector says their name ("" = as written)
             POST /v1/vim/send    {esn, to, text}       Vector says it on the contact's robot"""
         user_id = self.user_id()
         if not user_id:
@@ -928,6 +948,9 @@ class Handler(QuietLog, BaseHTTPRequestHandler):
                 return self.send_json(400, error("bad_contact", "Unknown contact, or no name."))
         elif action == "remove":
             VIM.remove(esn, contact)
+        elif action == "pronounce":
+            if not VIM.set_say(esn, contact, body.get("say") or ""):
+                return self.send_json(400, error("bad_contact", "Unknown contact."))
         elif action == "send":
             problem = VIM.send(esn, contact, body.get("text") or "")
             if problem:
@@ -1229,7 +1252,7 @@ class VimInternal(QuietLog, BaseHTTPRequestHandler):
             esn = (q.get("esn") or [""])[0].lower()
             if not ESN.match(esn):
                 return self.send_json(400, error("bad_serial", "Say which robot (esn=)."))
-            return self.send_json(200, {"contacts": [{"esn": e, "name": c["name"], "sounds": c["sounds"]}
+            return self.send_json(200, {"contacts": [{"esn": e, "name": c["name"], "sounds": c["sounds"], "say": c["say"]}
                                                      for e, c in VIM.contacts(esn).items()]})
         if path == "/vim/pending":
             return self.send_json(200, {"messages": VIM.pending()})

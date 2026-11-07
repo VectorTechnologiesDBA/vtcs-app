@@ -5,6 +5,7 @@ import android.content.DialogInterface;
 import android.graphics.Typeface;
 import android.view.View;
 import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.TextView;
@@ -71,7 +72,7 @@ public class MessagesActivity extends Screen {
             }
         });
         status = status();
-        note("Hold a name to rename or remove them.");
+        note("Hold a name to rename them, fix how Vector says it, or remove them.");
 
         heading("Add someone");
         addCode = field("Their add code", "", false);
@@ -167,15 +168,38 @@ public class MessagesActivity extends Screen {
     }
 
     private void edit(final JSONObject c) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        box.addView(text("Name", 13, GREY, false));
         final EditText name = new EditText(this);
         name.setText(c.optString("name"));
+        box.addView(name);
+        box.addView(text("How Vector says it (spell it the way it sounds, like Yahtsek for Jacek). "
+                + "Leave empty to use the name.", 13, GREY, false));
+        final EditText say = new EditText(this);
+        say.setText(c.optString("say"));
+        say.setHint(c.optString("name"));
+        box.addView(say);
         new AlertDialog.Builder(this)
                 .setTitle(c.optString("name"))
-                .setView(name)
-                .setPositiveButton("Rename", new DialogInterface.OnClickListener() {
+                .setView(box)
+                .setPositiveButton("Save", new DialogInterface.OnClickListener() {
                     public void onClick(DialogInterface d, int w) {
-                        call(status, "Saving…", "rename",
-                                body("contact", c.optString("esn"), "name", name.getText().toString().trim()), "Renamed.");
+                        final String esn = c.optString("esn");
+                        final String newName = name.getText().toString().trim();
+                        final String newSay = say.getText().toString().trim();
+                        background(status, "Saving…", new Task() {
+                            public String run() throws Exception {
+                                if (!newName.isEmpty() && !newName.equals(c.optString("name"))) {
+                                    Wp.postJson(MessagesActivity.this, "/v1/vim/rename", body("contact", esn, "name", newName));
+                                }
+                                JSONObject j = new JSONObject(Wp.postJson(MessagesActivity.this, "/v1/vim/pronounce",
+                                        body("contact", esn, "say", newSay)));
+                                show(j, false);
+                                return newSay.isEmpty() ? "Saved." : "Saved. Vector will say " + newSay + ".";
+                            }
+                        });
                     }
                 })
                 .setNeutralButton("Remove", new DialogInterface.OnClickListener() {

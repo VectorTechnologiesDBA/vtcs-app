@@ -4,6 +4,8 @@
 #
 #   bash deploy.sh server            install vpp_server.py, create wire-pod's per-bot folder, restart vpp-server
 #   bash deploy.sh build-wirepod     build a patched wire-pod in ~/wire-pod-build (the running one isn't touched)
+#   bash deploy.sh build-wirepod-whisper   the same, with whisper.cpp speech to text instead of Vosk (much better
+#                                    at names; WHISPER_MODEL=base.en by default, tiny.en if base is too slow)
 #   bash deploy.sh install-wirepod   swap it in for /usr/bin/wire-pod; puts the old one back if it doesn't start
 #   bash deploy.sh rollback-wirepod  put the original /usr/bin/wire-pod back
 #   bash deploy.sh relay             set up the VTCS relay (sshd on port 2222) for robots on other networks
@@ -14,6 +16,11 @@ ME=$(id -un)
 PERBOT=/etc/wire-pod/per-bot
 BUILD=$HOME/wire-pod-build
 VOSK_VER=0.3.45
+STT=vosk
+WHISPER_SRC=$HOME/whisper.cpp-src
+WHISPER_COMMIT=60cd96acff3a   # the commit wire-pod's Go binding (go.mod) is pinned to; they must match
+WHISPER_MODEL=${WHISPER_MODEL:-base.en}
+WHISPER_DIR=/etc/wire-pod/whisper
 
 say() { printf '\n== %s\n' "$*"; }
 
@@ -88,6 +95,9 @@ build_wirepod() {
 		mv "vosk-linux-$arch-$VOSK_VER" libvosk
 		rm "vosk-linux-$arch-$VOSK_VER.zip"
 	fi
+	if [ "$STT" = whisper ]; then
+		whisper_cpp
+	fi
 	say "wire-pod source"
 	rm -rf "$BUILD"
 	git clone --depth 1 --progress https://github.com/kercre123/wire-pod.git "$BUILD"
@@ -96,8 +106,16 @@ build_wirepod() {
 	python3 "$HERE/wire-pod-patch/apply.py" "$BUILD"
 	say "Building (takes a while on a Pi)"
 	cd "$BUILD/chipper"
-	export CGO_ENABLED=1 CGO_CFLAGS="-I$HOME/.vosk/libvosk" CGO_LDFLAGS="-L$HOME/.vosk/libvosk -lvosk -ldl -lpthread"
-	go build -tags nolibopusfile \
+	local tags=nolibopusfile
+	if [ "$STT" = whisper ]; then
+		tags="nolibopusfile whisper"
+		export CGO_ENABLED=1 CGO_CFLAGS="-I$WHISPER_SRC/include -I$WHISPER_SRC/ggml/include"
+		CGO_LDFLAGS=$(find "$WHISPER_SRC/build" -name "*.a" -printf '-L%h\n' | sort -u | tr '\n' ' ')
+		export CGO_LDFLAGS
+	else
+		export CGO_ENABLED=1 CGO_CFLAGS="-I$HOME/.vosk/libvosk" CGO_LDFLAGS="-L$HOME/.vosk/libvosk -lvosk -ldl -lpthread"
+	fi
+	go build -tags "$tags" \
 		-ldflags "-X 'github.com/kercre123/wire-pod/chipper/pkg/vars.CommitSHA=$(git rev-parse --short HEAD)-perbot'" \
 		-o "$BUILD/wire-pod" ./cmd/packaged/
 	say "Built $BUILD/wire-pod"
@@ -108,6 +126,32 @@ build_wirepod() {
 	ldd /usr/bin/wire-pod | grep -E "vosk|not found" || echo "  (no separate vosk library)"
 	echo
 	echo "Next: bash $0 install-wirepod"
+}
+
+# whisper.cpp, built once into static libraries (~10 minutes on a Pi 5), plus the model wire-pod loads.
+whisper_cpp() {
+	sudo apt-get install -y -qq cmake >/dev/null
+	if [ ! -f "$WHISPER_SRC/build/.vtcs-ok" ] || [ "$(git -C "$WHISPER_SRC" rev-parse --short=12 HEAD 2>/dev/null)" != "$WHISPER_COMMIT" ]; then
+		say "whisper.cpp (speech to text, built on this machine; this is the slow part)"
+		rm -rf "$WHISPER_SRC"
+		git clone -q https://github.com/kercre123/whisper.cpp.git "$WHISPER_SRC"
+		git -C "$WHISPER_SRC" checkout -q "$WHISPER_COMMIT"
+		cmake -S "$WHISPER_SRC" -B "$WHISPER_SRC/build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+			-DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=OFF >/dev/null
+		cmake --build "$WHISPER_SRC/build" -j"$(nproc)" --config Release
+		touch "$WHISPER_SRC/build/.vtcs-ok"
+	fi
+	if [ ! -f "$WHISPER_DIR/ggml-$WHISPER_MODEL.bin" ]; then
+		say "Whisper model $WHISPER_MODEL"
+		bash "$WHISPER_SRC/models/download-ggml-model.sh" "$WHISPER_MODEL" >/dev/null
+		sudo install -d -m 755 "$WHISPER_DIR"
+		sudo install -m 644 "$WHISPER_SRC/models/ggml-$WHISPER_MODEL.bin" "$WHISPER_DIR/ggml-$WHISPER_MODEL.bin"
+	fi
+	# the engine reads ggml-base.en.bin unless told otherwise; point that name at the chosen model
+	if [ "$WHISPER_MODEL" != base.en ]; then
+		sudo ln -sf "$WHISPER_DIR/ggml-$WHISPER_MODEL.bin" "$WHISPER_DIR/ggml-base.en.bin"
+	fi
+	ls -la "$WHISPER_DIR"
 }
 
 install_wirepod() {
@@ -159,6 +203,7 @@ rollback_wirepod() {
 case "${1:-}" in
 	server) server ;;
 	build-wirepod) build_wirepod ;;
+	build-wirepod-whisper) STT=whisper build_wirepod ;;
 	install-wirepod) install_wirepod ;;
 	rollback-wirepod) rollback_wirepod ;;
 	relay) relay ;;

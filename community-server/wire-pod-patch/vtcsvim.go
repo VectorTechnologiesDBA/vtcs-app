@@ -32,6 +32,15 @@ type vimContact struct {
 	Esn    string   `json:"esn"`
 	Name   string   `json:"name"`
 	Sounds []string `json:"sounds"` // how speech-to-text hears the name, learned by voice
+	Say    string   `json:"say"`    // how Vector should pronounce it, set in the app ("Yahtsek")
+}
+
+// vimSpoken: the name as Vector should say it out loud.
+func vimSpoken(c vimContact) string {
+	if c.Say != "" {
+		return c.Say
+	}
+	return c.Name
 }
 
 type vimMessage struct {
@@ -138,14 +147,14 @@ func VTCSVimIntent(req interface{}, voiceText string, botSerial string) bool {
 			switch {
 			case vimIs(words, vimYes):
 				if vimLearn(esn, q.to, q.text) {
-					vtcsRespond(req, voiceText, robot, "Got it. Now I know that's "+q.to.Name+".", false)
+					vtcsRespond(req, voiceText, robot, "Got it. Now I know that's "+vimSpoken(q.to)+".", false)
 				} else {
 					vtcsRespond(req, voiceText, robot, "I couldn't save that right now. Try again later.", false)
 				}
 			case vimIs(words, vimNo):
 				q.stage, q.text = vimAskName, ""
 				vimAsk(esn, q)
-				vtcsRespond(req, voiceText, robot, "Okay, say "+q.to.Name+" again.", true)
+				vtcsRespond(req, voiceText, robot, "Okay, say "+vimSpoken(q.to)+" again.", true)
 			default:
 				vimAsk(esn, q)
 				vtcsRespond(req, voiceText, robot, "Is that right? Say yes or no.", true)
@@ -197,7 +206,7 @@ func VTCSVimIntent(req interface{}, voiceText string, botSerial string) bool {
 		vtcsRespond(req, voiceText, robot, "I heard: "+message+". Is that correct?", true)
 	default:
 		vimAsk(esn, vimQuestion{stage: vimAskMessage, to: to})
-		vtcsRespond(req, voiceText, robot, "What do you want to say to "+to.Name+"?", true)
+		vtcsRespond(req, voiceText, robot, "What do you want to say to "+vimSpoken(to)+"?", true)
 	}
 	return true
 }
@@ -268,7 +277,7 @@ func vimLearnStart(req interface{}, voiceText, botSerial, esn string, rest []str
 			to = vimClosest(strings.Join(rest, ""), contacts)
 		}
 		vimAsk(esn, vimQuestion{stage: vimAskName, to: to})
-		vtcsRespond(req, voiceText, robot, "Okay. How do you say "+to.Name+"?", true)
+		vtcsRespond(req, voiceText, robot, "Okay. How do you say "+vimSpoken(to)+"?", true)
 	}
 	return true
 }
@@ -482,7 +491,7 @@ func vimSend(esn string, to vimContact, text string) string {
 		json.NewDecoder(resp.Body).Decode(&e)
 		return "I couldn't send that. " + e.Message
 	}
-	return "Sent to " + to.Name + "."
+	return "Sent to " + vimSpoken(to) + "."
 }
 
 func init() {
