@@ -519,16 +519,22 @@ def ota_version(path):
     return version
 
 
-def relay_port(esn):
-    """The local port a relayed robot's control API is reached on (wire-pod-patch/relay.go uses the same)."""
-    return 40000 + int(esn, 16) % 20000
+RELAY_PORT = 61443  # above Linux's outgoing-port range (32768-60999), so nothing else ever grabs it
+
+
+def relay_addr(esn):
+    """Where a relayed robot's control API is served: its own loopback address (127.x.y.z, from the ESN) on
+    RELAY_PORT. wire-pod reads it from relay_ok_dir/<esn>. One 127.0.0.1 port per robot used to collide with
+    outgoing connections, which once held a robot's port hostage indefinitely. Robots deserve their own address."""
+    n = int(esn, 16)
+    return "127.%d.%d.%d" % (64 + (n >> 16) % 128, (n >> 8) & 255, max(1, n & 255)), RELAY_PORT
 
 
 class Relay(threading.Thread):
     """Robots on other networks hold an SSH link to this server (vtcs-relay-sshd, port 2222) that ends in a Unix
     socket, relay_dir/<esn>.sock, leading to the robot's control API (vic-gateway). Every robot shares the link key
     from VictorOS, so a link is only used once the robot behind it shows the TLS certificate wire-pod recorded for
-    that ESN (only the real robot holds its key). Then it's served on 127.0.0.1:relay_port(esn), and
+    that ESN (only the real robot holds its key). Then it's served on relay_addr(esn), and
     relay_ok_dir/<esn> tells wire-pod to use that address."""
 
     def __init__(self):
@@ -599,18 +605,19 @@ class Relay(threading.Thread):
     def open_link(self, esn, path, ino):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        host, port = relay_addr(esn)
         try:
-            srv.bind(("127.0.0.1", relay_port(esn)))
+            srv.bind((host, port))
             srv.listen(16)
         except OSError as e:
-            log.error("relay %s: can't listen on port %d (%s)", esn, relay_port(esn), e)
+            log.error("relay %s: can't listen on %s:%d (%s)", esn, host, port, e)
             srv.close()
             return
         self.active[esn] = (ino, srv)
         threading.Thread(target=self._accept, args=(srv, path), daemon=True).start()
         with open(os.path.join(CFG["relay_ok_dir"], esn), "w") as f:
-            f.write("127.0.0.1:%d\n" % relay_port(esn))
-        log.info("relay %s: robot connected, reachable on 127.0.0.1:%d", esn, relay_port(esn))
+            f.write("%s:%d\n" % (host, port))
+        log.info("relay %s: robot connected, reachable on %s:%d", esn, host, port)
 
     def close_link(self, esn):
         entry = self.active.pop(esn, None)
