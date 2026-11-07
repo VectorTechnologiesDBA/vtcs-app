@@ -65,8 +65,6 @@ var (
 	// and nobody wants to explain that to Bob.
 	vimTriggers = []string{"send a text message to", "send a message to", "send a text to", "send text to",
 		"send message to", "text message", "send a", "send", "message", "text", "texts"}
-	vimLearnTriggers = []string{"learn how to say", "learn how to pronounce", "learn to say", "learn to pronounce",
-		"learn how you say", "learn the name"}
 	vimYes    = []string{"yes", "yeah", "yep", "yup", "correct", "right", "sure", "okay", "ok", "send it", "that's right", "it is"}
 	vimNo     = []string{"no", "nope", "nah", "wrong", "incorrect", "not", "that's wrong"}
 	vimCancel = []string{"", "cancel", "never mind", "nevermind", "nothing", "stop", "forget it", "quit"}
@@ -204,19 +202,31 @@ func VTCSVimIntent(req interface{}, voiceText string, botSerial string) bool {
 }
 
 // vimAfterLearn: the words after "learn how to say" etc. (the name, as badly heard as ever).
+// Vosk hears "say" as all sorts. "learn how to save j sick" was a real request. Nobody was saving anyone.
+var vimSayWords = map[string]bool{"say": true, "save": true, "said": true, "says": true, "sae": true, "see": true,
+	"sey": true, "stay": true, "set": true, "pronounce": true, "announce": true, "the": true, "name": true}
+
 func vimAfterLearn(words []string) ([]string, bool) {
-	t := strings.Join(words, " ") + " "
-	for _, trig := range vimLearnTriggers {
-		if strings.HasPrefix(t, trig+" ") {
-			rest := strings.Fields(t[len(trig):])
-			// "learn how to say Jacek's name"
-			if n := len(rest); n > 1 && rest[n-1] == "name" {
-				rest = rest[:n-1]
-			}
-			return rest, len(rest) > 0
-		}
+	// learn [how] [to|you] <say-ish word> [the] [name] <name> [name]
+	if len(words) < 2 || (words[0] != "learn" && words[0] != "lauren" && words[0] != "learned") {
+		return nil, false
 	}
-	return nil, false
+	rest := words[1:]
+	for len(rest) > 0 && (rest[0] == "how" || rest[0] == "to" || rest[0] == "you") {
+		rest = rest[1:]
+	}
+	said := false
+	for len(rest) > 0 && vimSayWords[rest[0]] {
+		rest, said = rest[1:], true
+	}
+	if !said { // "learn something" without a say: not ours
+		return nil, false
+	}
+	// "learn how to say Jacek's name"
+	if n := len(rest); n > 1 && rest[n-1] == "name" {
+		rest = rest[:n-1]
+	}
+	return rest, len(rest) > 0
 }
 
 // vimLearnStart: "learn how to say Jacek". The name was probably misheard (that's why we're here), so take the
