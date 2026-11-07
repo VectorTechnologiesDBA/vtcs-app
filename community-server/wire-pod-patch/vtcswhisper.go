@@ -89,6 +89,7 @@ func transcribe(audio []float32, prompt string) string {
 	defer mu.Unlock()
 	var text string
 	params.SetInitialPrompt(prompt)
+	params.SetAudioCtx(audioCtx(len(audio)))
 	wctx.Whisper_full(params, audio, nil, func(_ int) {
 		text = strings.TrimSpace(wctx.Whisper_full_get_segment_text(0))
 	}, nil)
@@ -136,6 +137,23 @@ func fetchNames(esn string) []string {
 		}
 	}
 	return list
+}
+
+// audioCtx: how much of Whisper's 30-second window to actually run. It's 50 steps a second; a 2-second "what time
+// is it" needs ~100, not 1500. Whisper reading 28 seconds of silence was why Vector took 3 seconds to answer.
+// A bit of slack (and a floor) keeps accuracy; WHISPER_AUDIO_CTX=0 turns this off.
+func audioCtx(samples int) int {
+	if os.Getenv("WHISPER_AUDIO_CTX") == "0" {
+		return 0
+	}
+	n := samples*50/16000 + 128
+	if n < 384 {
+		n = 384
+	}
+	if n > 1500 {
+		n = 1500
+	}
+	return n
 }
 
 // Things Whisper "hears" in silence because it watched too much YouTube during training.
