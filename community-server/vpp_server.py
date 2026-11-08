@@ -713,6 +713,12 @@ class Relay(threading.Thread):
     def close_link(self, esn):
         entry = self.active.pop(esn, None)
         if entry:
+            # close() alone doesn't wake the thread blocked in accept() on Linux, and the port stays taken
+            # ("Address already in use" every 10 s until the server restarts). shutdown() does wake it.
+            try:
+                entry[1].shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             entry[1].close()
             log.info("relay %s: link closed", esn)
         self._unmark(esn)
